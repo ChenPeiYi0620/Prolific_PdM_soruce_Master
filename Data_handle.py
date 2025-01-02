@@ -10,7 +10,7 @@ import pandas as pd
 
 
 # save the RUL data into the csv file
-def data_update_RUL_csv (ser, device_num, file_path, unpack_rul_data, retries=5,delay=1):
+def data_update_RUL_csv (ser, device_num, file_path, unpack_rul_data, retries=5,delay=1,acc_data=None):
     #rul data save status
     rul_data_is_save =0
     # for motor online check
@@ -19,31 +19,37 @@ def data_update_RUL_csv (ser, device_num, file_path, unpack_rul_data, retries=5,
     current_raw_alpha_mean_rms = np.sqrt(np.mean((current_raw_alpha-np.mean(current_raw_alpha)) ** 2))
     motor_onine_flag = True if current_raw_alpha_mean_rms > 0.05 else False
 
-    if motor_onine_flag: # if motor is online, save the rul data
-        voltage_alpha_out = u16_to_true_data(np.array(unpack_rul_data['voltage_alpha']), Motor_global_vars.Base_voltage)
-        voltage_beta_out  = u16_to_true_data(np.array(unpack_rul_data['voltage_beta']), Motor_global_vars.Base_voltage)
-        # current_alpha_out = np.array(unpack_rul_data['current_alpha'])
-        # current_beta_out  = np.array(unpack_rul_data['current_beta'])
-        current_alpha_out = u16_to_true_data(np.array(unpack_rul_data['current_alpha']), Motor_global_vars.Base_current)
-        current_beta_out  = u16_to_true_data(np.array(unpack_rul_data['current_beta']), Motor_global_vars.Base_current)
-        rul_out_data = np.vstack((voltage_alpha_out, voltage_beta_out, current_alpha_out, current_beta_out, np.array(unpack_rul_data['error_record'])))
+    voltage_alpha_out = u16_to_true_data(np.array(unpack_rul_data['voltage_alpha']), Motor_global_vars.Base_voltage)
+    voltage_beta_out  = u16_to_true_data(np.array(unpack_rul_data['voltage_beta']), Motor_global_vars.Base_voltage)
+    # current_alpha_out = np.array(unpack_rul_data['current_alpha'])
+    # current_beta_out  = np.array(unpack_rul_data['current_beta'])
+    current_alpha_out = u16_to_true_data(np.array(unpack_rul_data['current_alpha']), Motor_global_vars.Base_current)
+    current_beta_out  = u16_to_true_data(np.array(unpack_rul_data['current_beta']), Motor_global_vars.Base_current)
 
-        for try_times in range(retries):
-            try:
-                # write to file
-                # Organize data
-                with open(file_path, mode='w', newline='', encoding='utf-8') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow(['Unix_time',str(int(time.time()))])
-                    writer.writerow(['V_alpha', 'V_beta', 'I_alpha', 'I_beta'])
-                    # 強制數值單位至小數點第六位
-                    writer.writerows([[f"{x:.{6}f}" for x in row] for row in rul_out_data.T])
-                rul_data_is_save=1 # rul data save success
-            except Exception as e:
-                print(f'file saving error : {e}')
-                print(f'{file_path} open fail, try again {delay}s later ')
-                time.sleep(delay)  # sleep for 5 second
+    if acc_data is None:
+        data_names=['V_alpha', 'V_beta', 'I_alpha', 'I_beta', 'err_flags']
+        rul_out_data = np.vstack((voltage_alpha_out, voltage_beta_out, current_alpha_out, current_beta_out, np.array(unpack_rul_data['error_record'])))
     else:
+        data_names=['V_alpha', 'V_beta', 'I_alpha', 'I_beta', 'acc(g)']
+        rul_out_data = np.vstack((voltage_alpha_out, voltage_beta_out, current_alpha_out, current_beta_out, acc_data,
+                                  np.array(unpack_rul_data['error_record'])))
+
+    for try_times in range(retries):
+        try:
+            # write to file
+            # Organize data
+            with open(file_path, mode='w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(['Unix_time',str(int(time.time()))])
+                writer.writerow(data_names)
+                # 強制數值單位至小數點第六位
+                writer.writerows([[f"{x:.{6}f}" for x in row] for row in rul_out_data.T])
+            rul_data_is_save=1 # rul data save success
+        except Exception as e:
+            print(f'file saving error : {e}')
+            print(f'{file_path} open fail, try again {delay}s later ')
+            time.sleep(delay)  # sleep for 5 second
+    if not motor_onine_flag: # if motor is online, save the rul data:
         voltage_raw_alpha = u16_to_true_data(np.array(unpack_rul_data['voltage_alpha']), 1)
         voltage_raw_beta  = u16_to_true_data(np.array(unpack_rul_data['voltage_beta']), 1)
         vac_alpha_offset = np.mean(voltage_raw_alpha)
@@ -54,6 +60,7 @@ def data_update_RUL_csv (ser, device_num, file_path, unpack_rul_data, retries=5,
         ct_beta_offset = np.mean(current_raw_beta)
         command_485.set_ct_offset(ser, device_num, delay=0.1, ct_offset_alpha=ct_alpha_offset,
                                   ct_offset_beta=ct_beta_offset,sensor='CT')
+
 
     return rul_data_is_save
 

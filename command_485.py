@@ -266,7 +266,7 @@ def get_all_RUL_pack(ser, device_num,data_length):
             collect_sts=1
             break #transmition fail too many times, terminate this collection
     reset_AQbox_FAST(ser, device_num)
-    print(f"Package　loss: {err_count_loss} error: {err_count_err}")
+    print(f"Package　loss: {err_count_loss} error: {err_count_err}", end=", ")
     RUL_total= {
         'voltage_alpha':    RUL_data,
         'voltage_beta':     RUL_data1,
@@ -305,7 +305,8 @@ def set_ct_offset(ser,device_num,delay=0.1,ct_offset_alpha=0, ct_offset_beta=0, 
         cmd_check=cmd[3:]
         cmd_check.insert(0, device_num)
         if (cmd_check==data_eco):
-            print(f'{sensor} offset calibration success, offset as: {sensor}_offset_as: {ct_offset_as}, bs: {ct_offset_bs}')
+            pass
+            # print(f'{sensor} offset calibration success, offset as: {sensor}_offset_as: {ct_offset_as}, bs: {ct_offset_bs}')
         else:
             print(f'{sensor} offset calibration fail ')
     else:
