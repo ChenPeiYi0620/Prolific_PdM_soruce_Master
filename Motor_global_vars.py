@@ -39,9 +39,10 @@ Base_flux=get_parameter_from_df(parameters,'Base_Flux(Wb)',0.05)
 cn_range_scale=get_parameter_from_df(parameters,'cn_range_scale',0.05)
 data_length=get_parameter_from_df(parameters,'data_length',500)
 max_tries=get_parameter_from_df(parameters,'Max_tries',3)
-update_period=get_parameter_from_df(parameters,'Update_period',3)
+update_period=get_parameter_from_df(parameters,'Update_period',5)
 RUL_update_times=get_parameter_from_df(parameters,'RUL_update_times',2)
 V_measure_mode=get_parameter_from_df(parameters,'V_measure_mode','Vadc_mode')
+acc_threshold=get_parameter_from_df(parameters,'acc_threshold',0.2)
 
 sampling_rate=20000
 # for motor ID

@@ -343,7 +343,7 @@ def set_vac_offset(ser,device_num,delay=0.1,ct_offset_alpha=0, ct_offset_beta=0)
 
 # enable AQbox to update data buffer
 def reset_AQbox_FAST(ser,device_num):
-    reset_status=0
+    reset_status=1
     for i in range(3):  # try 3 times at max
         ser.write([1, device_num, 5, 0])
         ser.flush()  # flush output buffer
@@ -352,10 +352,34 @@ def reset_AQbox_FAST(ser,device_num):
         if data:  # if device is online, a int 5 will be response
             crc = device_num + data[2]
             if crc == 255:
-                reset_status=1
+                reset_status=0
                 break
-    if reset_status==0:
+    if reset_status==1:
         print('reset fail')
+    return reset_status
+
+# cmd 10: servo control
+def servo_control(device_num, ser, servo_on):
+    servo_status=0 #servo_status=0 if set succeed
+    # sevo turns on if servo_on=1, otherwise turn off
+    cmd = [1, device_num, 10]+[servo_on]
+    byte_cmd = bytes(cmd)
+    try_time=0
+    while try_time<3:
+        ser.write(byte_cmd)
+        ser.flush()  # flush output buffer
+        data = ser.read(4)  # read all buffer data or wait for one byte data
+        ser.flushInput()  # flush input buffer
+        if data and (device_num + data[2])==255:  # if device is online, a int 5 will be response
+            print('servo on set complete') if servo_on==1 else  print('servo off set complete')
+            time.sleep(2) # wait the motor start
+            break
+        try_time=try_time+1
+    if servo_status:
+        print('servo control fail, stop collection')
+        exit()
+    return
+
 
 # def simple_plot(data_list):
 #      plt.plot(data_list)  # 使用圓圈標記節點
