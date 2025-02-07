@@ -10,46 +10,41 @@ import pandas as pd
 
 
 # save the RUL data into the csv file
-def data_update_RUL_csv (ser, device_num, file_path, unpack_rul_data, retries=5,delay=1,acc_data=None):
+def data_update_RUL_csv (ser, device_num, file_path, unpack_rul_data, retries=5,delay=1):
     #rul data save status
     rul_data_is_save =0
     # for motor online check
     current_raw_alpha=u16_to_true_data(np.array(unpack_rul_data['current_alpha']), 1)
     current_raw_beta=u16_to_true_data(np.array(unpack_rul_data['current_beta']), 1)
     current_raw_alpha_mean_rms = np.sqrt(np.mean((current_raw_alpha-np.mean(current_raw_alpha)) ** 2))
-    motor_onine_flag = True if current_raw_alpha_mean_rms > 0.05 else False
+    motor_onine_flag = True # for test only
+    # motor_onine_flag = True if current_raw_alpha_mean_rms > 0.05 else False
 
-    voltage_alpha_out = u16_to_true_data(np.array(unpack_rul_data['voltage_alpha']), Motor_global_vars.Base_voltage)
-    voltage_beta_out  = u16_to_true_data(np.array(unpack_rul_data['voltage_beta']), Motor_global_vars.Base_voltage)
-    # current_alpha_out = np.array(unpack_rul_data['current_alpha'])
-    # current_beta_out  = np.array(unpack_rul_data['current_beta'])
-    current_alpha_out = u16_to_true_data(np.array(unpack_rul_data['current_alpha']), Motor_global_vars.Base_current)
-    current_beta_out  = u16_to_true_data(np.array(unpack_rul_data['current_beta']), Motor_global_vars.Base_current)
-
-    if acc_data is None:
-        data_names=['V_alpha', 'V_beta', 'I_alpha', 'I_beta', 'err_flags']
+    if motor_onine_flag: # if motor is online, save the rul data
+        voltage_alpha_out = u16_to_true_data(np.array(unpack_rul_data['voltage_alpha']), Motor_global_vars.Base_voltage)
+        voltage_beta_out  = u16_to_true_data(np.array(unpack_rul_data['voltage_beta']), Motor_global_vars.Base_voltage)
+        # current_alpha_out = np.array(unpack_rul_data['current_alpha'])
+        # current_beta_out  = np.array(unpack_rul_data['current_beta'])
+        current_alpha_out = u16_to_true_data(np.array(unpack_rul_data['current_alpha']), Motor_global_vars.Base_current)
+        current_beta_out  = u16_to_true_data(np.array(unpack_rul_data['current_beta']), Motor_global_vars.Base_current)
         rul_out_data = np.vstack((voltage_alpha_out, voltage_beta_out, current_alpha_out, current_beta_out, np.array(unpack_rul_data['error_record'])))
-    else:
-        data_names=['V_alpha', 'V_beta', 'I_alpha', 'I_beta', 'acc(g)']
-        rul_out_data = np.vstack((voltage_alpha_out, voltage_beta_out, current_alpha_out, current_beta_out, acc_data,
-                                  np.array(unpack_rul_data['error_record'])))
 
-    for try_times in range(retries):
-        try:
-            # write to file
-            # Organize data
-            with open(file_path, mode='w', newline='', encoding='utf-8') as csvfile:
-                writer = csv.writer(csvfile)
-                writer.writerow(['Unix_time',str(int(time.time()))])
-                writer.writerow(data_names)
-                # 強制數值單位至小數點第六位
-                writer.writerows([[f"{x:.{6}f}" for x in row] for row in rul_out_data.T])
-            rul_data_is_save=1 # rul data save success
-        except Exception as e:
-            print(f'file saving error : {e}')
-            print(f'{file_path} open fail, try again {delay}s later ')
-            time.sleep(delay)  # sleep for 5 second
-    if not motor_onine_flag: # if motor is online, save the rul data:
+        for try_times in range(retries):
+            try:
+                # write to file
+                # Organize data
+                with open(file_path, mode='w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow(['Unix_time',str(int(time.time()))])
+                    writer.writerow(['V_alpha', 'V_beta', 'I_alpha', 'I_beta','error_flags'])
+                    # 強制數值單位至小數點第六位
+                    writer.writerows([[f"{x:.{6}f}" for x in row] for row in rul_out_data.T])
+                rul_data_is_save=1 # rul data save success
+            except Exception as e:
+                print(f'file saving error : {e}')
+                print(f'{file_path} open fail, try again {delay}s later ')
+                time.sleep(delay)  # sleep for 5 second
+    else:
         voltage_raw_alpha = u16_to_true_data(np.array(unpack_rul_data['voltage_alpha']), 1)
         voltage_raw_beta  = u16_to_true_data(np.array(unpack_rul_data['voltage_beta']), 1)
         vac_alpha_offset = np.mean(voltage_raw_alpha)
@@ -61,10 +56,7 @@ def data_update_RUL_csv (ser, device_num, file_path, unpack_rul_data, retries=5,
         command_485.set_ct_offset(ser, device_num, delay=0.1, ct_offset_alpha=ct_alpha_offset,
                                   ct_offset_beta=ct_beta_offset,sensor='CT')
 
-
     return rul_data_is_save
-
-
 # save the FAST data into the csv file
 def data_update_FAST_csv (file_path, motor_cond, motor_cn_sts, unpack_fast_data,err_record, retries=5,delay=1,device_number=1):
     ccae_data=read_sample_ccae()
@@ -147,22 +139,23 @@ def get_motor_cond_list(motor_cond_raw):
     motr_cond_list.append(u16_to_true_data(motor_cond_raw['torque'], pu_gain=Motor_global_vars.Base_Torque))
     motr_cond_list.append(u16_to_true_data(motor_cond_raw['power'], pu_gain=Motor_global_vars.Base_Power))
     # power is offset by 0.00001 to avoid divide by zero
-    motr_cond_list.append(motr_cond_list[0]/60*2*math.pi* motr_cond_list[1]/(motr_cond_list[2]+0.000001) *100)
+    motr_cond_list.append((motr_cond_list[0]*4/60*2*math.pi* motr_cond_list[1]/(motr_cond_list[2]+0.000001) *100/1000))
+    # motr_cond_list.append((max((motr_cond_list[0]*4/60*2*math.pi* motr_cond_list[1]/(motr_cond_list[2]+0.000001) *100/1000),96.1)))
     motr_cond_list.append(int(motr_cond_list[3]<90))
     return motr_cond_list
 # get cn diagnosis result
 def get_cn_sts_list(motor_cn_raw):
     # conditions: 'Speed(Rpm)', 'Torque(N)', 'Power(KW)', 'Efficiency(%)', 'Efficiency_alarm'
-    motr_cn_list=[]
+    motor_cn_list=[]
     cn_base=u16_to_true_data(motor_cn_raw['I_rms'], pu_gain=Motor_global_vars.Base_current)
     cn_range=cn_base*Motor_global_vars.cn_range_scale
-    motr_cn_list.append(u16_to_true_data(motor_cn_raw['Icn_x'], pu_gain=Motor_global_vars.Base_current))
-    motr_cn_list.append(u16_to_true_data(motor_cn_raw['Icn_y'], pu_gain=Motor_global_vars.Base_current))
-    cn_thres=math.sqrt(motr_cn_list[0]**2+motr_cn_list[1]**2)/cn_base*100
-    motr_cn_list.append(cn_thres)
-    motr_cn_list.append(int(motr_cn_list[2]>100))
-    motr_cn_list.append(cn_range)
-    return motr_cn_list
+    motor_cn_list.append(u16_to_true_data(motor_cn_raw['Icn_x'], pu_gain=Motor_global_vars.Base_current))
+    motor_cn_list.append(u16_to_true_data(motor_cn_raw['Icn_y'], pu_gain=Motor_global_vars.Base_current))
+    cn_thres=math.sqrt(motor_cn_list[0]**2+motor_cn_list[1]**2)/cn_base*100
+    motor_cn_list.append(cn_thres)
+    motor_cn_list.append(int(motor_cn_list[2]>100))
+    motor_cn_list.append(cn_range)
+    return motor_cn_list
 # rescale the Uint16 data to float
 def u16_to_true_data(u16_data, pu_gain=1):
     float_data=(u16_data-32768)/32768*pu_gain
@@ -176,7 +169,7 @@ def read_sample_ccae():
         for index, row in enumerate(reader):
             ccae_dict[index] = row  # 保留整行數據，包括字串和數字
     return ccae_dict
-#padding function to write specific format of data file
+# padding function to write specific format of data file
 def pad_list_with_empty_strings(input_list, target_length=8):
    # if list length<target_length, pad it
     if len(input_list) < target_length:

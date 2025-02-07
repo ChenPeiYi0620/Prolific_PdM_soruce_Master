@@ -5,11 +5,11 @@ import serial
 # import matplotlib.pyplot as plt
 import Motor_global_vars
 
-def read_status(ser,device_num,delay=0.1):
+def read_status(ser,device_num,delay=0.1,transmit_test=0):
     # clear_RFIFO_buffer(ser)
     device_status=0
     v_mode=0 if Motor_global_vars.V_measure_mode=='Vpwm_mode' else 1
-    cmd=[1, device_num, 1, 0]+[v_mode]
+    cmd=[1, device_num, 1, 0]+[v_mode,transmit_test]
     byte_cmd = bytes(cmd)
     ser.write(byte_cmd)
     ser.flush()  # flush output buffer
@@ -28,7 +28,7 @@ def read_status(ser,device_num,delay=0.1):
                     device_status=1
                     print(f" Device {device_num} is online.")
                     return device_status
-            print(f" Device {device_num} set parameter fail.")
+            print(f" Device {device_num} set parameter fail, response")
             return device_status
         else:
             print(f" Device {device_num} has incorrect response. {data}")
@@ -39,12 +39,12 @@ def read_status(ser,device_num,delay=0.1):
 
         return device_status
 
-def check_device_number(ser, delay=0.1):
+def check_device_number(ser, delay=0.1, transmit_test=0):
     device_number = 8  # 16 device at max
     device_status = [0] * device_number
     try:
         for i in range(1, device_number+1):
-            sts= read_status(ser, i, delay)
+            sts= read_status(ser, i, delay,transmit_test)
             device_status[i - 1] = sts  # if device is on, set the status to 1
     except serial.SerialException as ex:
         print(f"Serial error occurred: {ex}")
@@ -118,37 +118,45 @@ def read_large_data_with_timeout(ser):
     return data
 
 # get one data pack (4 word sensor data)
-def get_one_4word_pack(ser, device_num, Master_cmd):
-    if  Master_cmd=='RUL':
+def get_one_4word_pack(ser, device_num, MOSI_cmd, cmd_content=None):
+    if cmd_content is None:
+        cmd_content = [0]
+    if  MOSI_cmd=='RUL':
         Master_cmd=4
-    elif Master_cmd=='FAST':
+    elif MOSI_cmd=='FAST':
         Master_cmd=3
-    elif Master_cmd=='Cond':
+    elif MOSI_cmd=='Cond':
         Master_cmd=2
     else:
-        Master_cmd = 7
-    cmd = [1, device_num, Master_cmd, 0] #2 is for RUL data
+        Master_cmd = 7 # get winding fault status
+    cmd = [1, device_num, Master_cmd ]+cmd_content
     byte_cmd = bytes(cmd)
     pack_status=[0,0] # package collect status, first means pksg loss, second means data err
     try:
         ser.reset_input_buffer()
         ser.write(byte_cmd)
         ser.flush()  # ensure sending is complete
-        # data = ser.read(ser.in_waiting or 10)  # read all buffer data or wait for one byte data
+        # start_time = time.time()
+        # print(" one TX time：{:.6f} s".format(time.time() - start_time), end=' ')
+        # data = ser.read(ser.in_waiting or 10)  # read all buffer data or          wait for one byte data
         data = ser.read(10)
+        # print(MOSI_cmd, end=' ')
+        # print(" one RX time ：{:.6f} s".format(time.time() - start_time))
         if len(data)==10:
             if not (data[0] == 0x2 and data[1] == device_num):
                 pack_status=[0,1]
-            return pack_status, data
-        else:
 
-            if len(data)==0:
+            return pack_status, data
+
+        else:
+            if len(data)==0: #  data loss
                 data = bytearray(10)  # fake data
                 return [1, 0], data
-            else:
+            else:   #  data receive error
                 # print(f"incorrect data length: {len(data)}, data: {data.hex()}")
                 data = bytearray(10)  # fake data
                 return [0, 1], data # incorrect data length
+
     except Exception as ex:
         print(f"FAST data collect incomplete")
         data= bytearray(10)
@@ -218,12 +226,13 @@ def get_all_FAST_pack(ser, device_num,data_length):
         FAST_data2[i - 1] = int16_values[3] # idle
         FAST_data3[i - 1] = int16_values[4] # idle
         err_flags [i - 1] = 0
-        if (err_count_loss+err_count_err)>=100:
+        if (err_count_loss+err_count_err)>=200:
             print("Collection fail too many times, end this collection")
             collect_sts=1
             break #transmition fail too many times, terminate this collection
+    # collection complete, reset the AQbox, enabl AQbox ADC sampling
     reset_AQbox_FAST(ser, device_num)
-    print(f"\rPackage　loss: {err_count_loss} error: {err_count_err}", end=" ")
+    print(f"collect loss/error: {err_count_loss}/{err_count_err}" , end=" ")
     FAST_total = {
         'flux_alpha': FAST_data,
         'flux_beta': FAST_data1,
@@ -242,10 +251,12 @@ def get_all_RUL_pack(ser, device_num,data_length):
     err_count_err = 0  # package error times
     collect_sts=0  #transmit status
     last_int16_values=[0]*5 # to handle package error
+
     for i in range(1, data_length+1) :
-        # time.sleep(0.001)
-        # pkg_sts,data=get_one_RUL_pack(ser, device_num)
-        pkg_sts, data = get_one_4word_pack(ser, device_num, 'RUL')
+        pkt_ID=i-1
+        pkt_ID = list(pkt_ID.to_bytes(2, byteorder='big'))
+        # start_time = time.time()
+        pkg_sts, data = get_one_4word_pack(ser, device_num, 'RUL', cmd_content=pkt_ID)
         # replace data with previous one if error
         if (pkg_sts[0]+pkg_sts[1])>0:
             int16_values = last_int16_values
@@ -261,12 +272,15 @@ def get_all_RUL_pack(ser, device_num,data_length):
         RUL_data2[i - 1] = int16_values[3]
         RUL_data3[i - 1] = int16_values[4]
         err_flags [i - 1] = 0
-        if (err_count_loss+err_count_err)>=100:
+        # print(" one package collect time：{:.6f} s".format(time.time() - start_time))
+        if (err_count_loss+err_count_err)>=200:
             print("Collection fail too many times, skip this collection")
             collect_sts=1
             break #transmition fail too many times, terminate this collection
+
+    # collection complete, reset the AQbox, enabl AQbox ADC sampling
     reset_AQbox_FAST(ser, device_num)
-    print(f"Package　loss: {err_count_loss} error: {err_count_err}", end=", ")
+    print(f"collect loss/error: {err_count_loss}/{err_count_err}" , end=" ")
     RUL_total= {
         'voltage_alpha':    RUL_data,
         'voltage_beta':     RUL_data1,
@@ -274,6 +288,7 @@ def get_all_RUL_pack(ser, device_num,data_length):
         'current_beta':     RUL_data3,
         'error_record':     err_flags
     }
+
     return RUL_total,err_flags,collect_sts
 
 # invalid command, force AQbox to read out the data buffer
@@ -299,18 +314,17 @@ def set_ct_offset(ser,device_num,delay=0.1,ct_offset_alpha=0, ct_offset_beta=0, 
     ser.flushInput()  # flush input buffer
     if data:  # if device is online, a int 5 will be response
         if not(len(data)==10): #length incorrect
-            print(f'{sensor} offset calibration fail ')
+            print(f'Device {device_num} {sensor} offset calibration fail ')
         data_eco = list(data)
         data_eco=data_eco[1:]
         cmd_check=cmd[3:]
         cmd_check.insert(0, device_num)
         if (cmd_check==data_eco):
-            pass
-            # print(f'{sensor} offset calibration success, offset as: {sensor}_offset_as: {ct_offset_as}, bs: {ct_offset_bs}')
+            print(f'Device {device_num} {sensor} offset calibration success, offset as: {sensor}_offset_as: {ct_offset_as}, bs: {ct_offset_bs}')
         else:
-            print(f'{sensor} offset calibration fail ')
+            print(f'Device {device_num} {sensor} offset calibration fail ')
     else:
-        print(f'{sensor} offset calibration fail ')
+        print(f'Device {device_num} {sensor} offset calibration fail ')
 
 def set_vac_offset(ser,device_num,delay=0.1,ct_offset_alpha=0, ct_offset_beta=0):
     ct_offset_as=ct_offset_alpha
@@ -343,7 +357,7 @@ def set_vac_offset(ser,device_num,delay=0.1,ct_offset_alpha=0, ct_offset_beta=0)
 
 # enable AQbox to update data buffer
 def reset_AQbox_FAST(ser,device_num):
-    reset_status=1
+    reset_status=0
     for i in range(3):  # try 3 times at max
         ser.write([1, device_num, 5, 0])
         ser.flush()  # flush output buffer
@@ -352,11 +366,10 @@ def reset_AQbox_FAST(ser,device_num):
         if data:  # if device is online, a int 5 will be response
             crc = device_num + data[2]
             if crc == 255:
-                reset_status=0
+                reset_status=1
                 break
-    if reset_status==1:
-        print('reset fail')
-    return reset_status
+    if reset_status==0:
+        print('reset fail !!!')
 
 # cmd 10: servo control
 def servo_control(device_num, ser, servo_on):
@@ -379,7 +392,6 @@ def servo_control(device_num, ser, servo_on):
         print('servo control fail, stop collection')
         exit()
     return
-
 
 # def simple_plot(data_list):
 #      plt.plot(data_list)  # 使用圓圈標記節點

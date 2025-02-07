@@ -44,7 +44,8 @@ def pico_setup_acc(data_length):
     # channel = PS4000_CHANNEL_A = 0
     # enabled = 1
     # coupling type = PS4000_DC = 1
-    chARange = ps.PS4000_RANGE["PS4000_ACCELEROMETER_500MV"]
+    # chARange = ps.PS4000_RANGE["PS4000_ACCELEROMETER_500MV"]
+    chARange = ps.PS4000_RANGE["PS4000_ACCELEROMETER_50MV"]
     status["setChA"] = ps.ps4000SetChannel(chandle, 0, 1, 1, chARange)
     assert_pico_ok(status["setChA"])
 
@@ -94,7 +95,8 @@ def pico_setup_acc(data_length):
     # pointer to timeIntervalNanoseconds = ctypes.byref(timeIntervalns)
     # pointer to maxSamples = ctypes.byref(returnedMaxSamples)
     # segment index = 0
-    timebase = 51
+    # timebase = 51
+    timebase=1001 # 20k sampling rate
     timeIntervalns = ctypes.c_float()
     returnedMaxSamples = ctypes.c_int32()
     oversample = ctypes.c_int16(1)
@@ -172,7 +174,7 @@ def get_pico_values(status, chandle, runblock_settings, chARange):
         status["setChA"] = ps.ps4000SetChannel(chandle, 0, 1, 1, chARange)
         assert_pico_ok(status["setChA"])
         print(f'Pico overflow, change ADC range to {pico_range}')
-        print(f'chARange: {chARange}')
+        # print(f'chARange: {chARange}')
         acc_gain = pico_range_dict[pico_range]
 
     # convert ADC result to acceleration in g

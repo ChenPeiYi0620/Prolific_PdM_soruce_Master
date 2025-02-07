@@ -16,8 +16,8 @@ def get_parameter_from_df(df,para_name,default_value):
         return default_value
     if isinstance(parameter_val, (float, np.integer)):
         return float(parameter_val) if isinstance(parameter_val, float) else int(parameter_val)
-    elif isinstance(parameter_val, (float, np.integer)):
-        return str(parameter_val)
+    elif isinstance(parameter_val, str):
+        return parameter_val
     else:
         return default_value
 
@@ -39,12 +39,21 @@ Base_flux=get_parameter_from_df(parameters,'Base_Flux(Wb)',0.05)
 cn_range_scale=get_parameter_from_df(parameters,'cn_range_scale',0.05)
 data_length=get_parameter_from_df(parameters,'data_length',500)
 max_tries=get_parameter_from_df(parameters,'Max_tries',3)
-update_period=get_parameter_from_df(parameters,'Update_period',5)
+update_period=get_parameter_from_df(parameters,'Update_period',300)
 RUL_update_times=get_parameter_from_df(parameters,'RUL_update_times',2)
 V_measure_mode=get_parameter_from_df(parameters,'V_measure_mode','Vadc_mode')
-acc_threshold=get_parameter_from_df(parameters,'acc_threshold',0.2)
+fast_update_period=get_parameter_from_df(parameters,'FAST_period',60) # 1 min
+rul_update_period=get_parameter_from_df(parameters,'RUL_period',300) # 5 min
+transmit_test_flag=get_parameter_from_df(parameters,'Transmit_test_flag',0)
+Data_folder_path=parameters['Record File Path']
+Data_folder_path=Data_folder_path[0]
 
+# sampling rate
 sampling_rate=20000
+
+# vibration alarm threshold (g)
+acc_threshold=0.2
+
 # for motor ID
 motor_id={
     1: "PUMP_A0101",
