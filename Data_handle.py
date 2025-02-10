@@ -9,6 +9,70 @@ import command_485
 import pandas as pd
 
 
+# save the RUL data into the parquet file with pandas dataframe
+def data_update_RUL_parquet(ser, device_num, motor_cond, filename, unpack_rul_data, retries=5, delay=1):
+    # rul data save status
+    rul_data_is_save = 0
+    # for motor online check
+    current_raw_alpha = u16_to_true_data(np.array(unpack_rul_data['current_alpha']), 1)
+    current_raw_beta = u16_to_true_data(np.array(unpack_rul_data['current_beta']), 1)
+    current_raw_alpha_mean_rms = np.sqrt(np.mean((current_raw_alpha - np.mean(current_raw_alpha)) ** 2))
+    motor_onine_flag = True  # for test only
+    # motor_onine_flag = True if current_raw_alpha_mean_rms > 0.05 else False
+
+    if motor_onine_flag:  # if motor is online, save the rul data
+        voltage_alpha_out = u16_to_true_data(np.array(unpack_rul_data['voltage_alpha']), Motor_global_vars.Base_voltage)
+        voltage_beta_out = u16_to_true_data(np.array(unpack_rul_data['voltage_beta']), Motor_global_vars.Base_voltage)
+        # current_alpha_out = np.array(unpack_rul_data['current_alpha'])
+        # current_beta_out  = np.array(unpack_rul_data['current_beta'])
+        current_alpha_out = u16_to_true_data(np.array(unpack_rul_data['current_alpha']), Motor_global_vars.Base_current)
+        current_beta_out = u16_to_true_data(np.array(unpack_rul_data['current_beta']), Motor_global_vars.Base_current)
+        rul_out_data = np.vstack((voltage_alpha_out, voltage_beta_out, current_alpha_out, current_beta_out,
+                                  np.array(unpack_rul_data['error_record'])))
+
+        motor_cond_out_list = get_motor_cond_list(motor_cond)
+        # conditions: 'Speed(Rpm)', 'Torque(N)', 'Power(KW)', 'Efficiency(%)', 'Efficiency_alarm'
+        data = {
+            "Unix Time": [str(int(time.time()))],       # Unix 時間
+            "Speed": [motor_cond_out_list[0]],          # 力矩 (Nm)
+            "Torque": [motor_cond_out_list[1]],         # 效率 (%)
+            "Power": [motor_cond_out_list[2]],          # 轉速 (RPM)
+            "Efficiency": [motor_cond_out_list[3]],     # 功率 (W)
+            "Voltage alpha": [voltage_alpha_out],
+            "Voltage beta": [voltage_beta_out],
+            "Current alpha": [current_alpha_out],
+            "Current beta": [current_beta_out],
+        }
+        # create a DataFrame
+        df_tosave = pd.DataFrame(data)
+
+        # try to save the data
+        for try_times in range(retries):
+            try:
+                base, ext = os.path.splitext(filename)  # 分離檔名與副檔名
+                if ext.lower() == ".csv":
+                     filename=base + ".parquet"
+                df_tosave.to_parquet(filename, engine="pyarrow")
+                rul_data_is_save = 1  # rul data save success
+            except Exception as e:
+                print(f'file saving error : {e}')
+                print(f'{filename} open fail, try again {delay}s later ')
+                time.sleep(delay)  # sleep for 5 second
+    else:
+        voltage_raw_alpha = u16_to_true_data(np.array(unpack_rul_data['voltage_alpha']), 1)
+        voltage_raw_beta = u16_to_true_data(np.array(unpack_rul_data['voltage_beta']), 1)
+        vac_alpha_offset = np.mean(voltage_raw_alpha)
+        vac_beta_offset = np.mean(voltage_raw_beta)
+        command_485.set_ct_offset(ser, device_num, delay=0.1, ct_offset_alpha=vac_alpha_offset,
+                                  ct_offset_beta=vac_beta_offset, sensor='VAC')
+        ct_alpha_offset = np.mean(current_raw_alpha)
+        ct_beta_offset = np.mean(current_raw_beta)
+        command_485.set_ct_offset(ser, device_num, delay=0.1, ct_offset_alpha=ct_alpha_offset,
+                                  ct_offset_beta=ct_beta_offset, sensor='CT')
+
+    return rul_data_is_save
+
+
 # save the RUL data into the csv file
 def data_update_RUL_csv (ser, device_num, file_path, unpack_rul_data, retries=5,delay=1):
     #rul data save status
@@ -139,7 +203,7 @@ def get_motor_cond_list(motor_cond_raw):
     motr_cond_list.append(u16_to_true_data(motor_cond_raw['torque'], pu_gain=Motor_global_vars.Base_Torque))
     motr_cond_list.append(u16_to_true_data(motor_cond_raw['power'], pu_gain=Motor_global_vars.Base_Power))
     # power is offset by 0.00001 to avoid divide by zero
-    motr_cond_list.append((motr_cond_list[0]*4/60*2*math.pi* motr_cond_list[1]/(motr_cond_list[2]+0.000001) *100/1000))
+    motr_cond_list.append((motr_cond_list[0]/60*2*math.pi* motr_cond_list[1]/(motr_cond_list[2]+0.000001) *100))
     # motr_cond_list.append((max((motr_cond_list[0]*4/60*2*math.pi* motr_cond_list[1]/(motr_cond_list[2]+0.000001) *100/1000),96.1)))
     motr_cond_list.append(int(motr_cond_list[3]<90))
     return motr_cond_list

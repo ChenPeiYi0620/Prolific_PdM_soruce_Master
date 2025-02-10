@@ -92,7 +92,7 @@ def plot_sensory_data(fig,axs, v_alpha, v_beta, i_alpha, i_beta, flux_alpha, flu
     fig.canvas.draw()
     plt.pause(0.1)  # 非阻塞顯示
 
-def plot_sensory_data_pico(fig,axs, v_alpha, v_beta, i_alpha, i_beta, acc_data):
+def plot_sensory_data_pico(fig,axs, v_alpha, v_beta, i_alpha, i_beta, acc_data=None):
     # 將所有數據轉換為 numpy 陣列
     v_alpha, v_beta = np.array(v_alpha), np.array(v_beta)
     i_alpha, i_beta = np.array(i_alpha), np.array(i_beta)
@@ -122,19 +122,14 @@ def plot_sensory_data_pico(fig,axs, v_alpha, v_beta, i_alpha, i_beta, acc_data):
     fig.canvas.draw()
     plt.pause(0.1)  # 非阻塞顯示
 
-# check the newest data number of the recorded RUL data
+# check the newest data number of the recorded RUL data (scv or parquet)
 def get_newest_data_number(Rul_folder_name):
-    file_names = os.listdir(Rul_folder_name)
-    if not file_names:
+    files = [f for f in os.listdir(Rul_folder_name) if f.endswith((".csv", ".parquet"))]
+    if not files:
         return 0
-    file_names = sorted(
-        [f for f in file_names if os.path.isfile(os.path.join(Rul_folder_name, f))],
-        key=lambda x: os.path.getmtime(os.path.join(Rul_folder_name, x))
-    )
-    newest_filename = file_names[-1]
-    newest_number_str = newest_filename.replace(".csv", "").split("_")[-1]
-    newest_number = int(newest_number_str) if newest_number_str.isdigit() else 0
-    return newest_number
+    newest_file = max(files, key=lambda f: os.path.getmtime(os.path.join(Rul_folder_name, f)))
+    return int(newest_file.rsplit("_", 1)[-1].split(".")[0]) if newest_file.rsplit("_", 1)[-1].split(".")[
+        0].isdigit() else 0
 
 def check_and_create_folders(Data_folder, online_device_indices, RUL_newest_numbers):
     if not os.path.exists(Data_folder):
@@ -163,8 +158,8 @@ def find_AQbox_port():
 def AQbox_serial_set_up(COM):
     ser = serial.Serial()
     ser.port = COM
-    # ser.baudrate = 921600
-    ser.baudrate = 115200
+    ser.baudrate = 921600 # for NTU quick data collection
+    # ser.baudrate = 115200 # for PEWC stable data collection
     ser.bytesize = serial.EIGHTBITS
     ser.parity = serial.PARITY_NONE
     ser.stopbits = serial.STOPBITS_TWO
@@ -262,20 +257,24 @@ def collect_rul_data(ser, online_device_indices, RUL_newest_numbers, Data_folder
             retries = 0
             # run the pico block
             r_pico.runblock_pico_A(status, chandle, runblock_settings)
+
+            # get motor operating condition
+            motor_cond, cond_err_sts = command_485.get_cond_pack(ser, current_device_number + 1, 3)
+
             while retries < MAX_RETRIES:
                 dataRUL, err_record, err_sts = command_485.get_all_RUL_pack(ser, current_device_number + 1, AQ_data_length * 4)
 
                 # ge pico acc data and its rms
                 chARange, pico_data = r_pico.get_pico_values(status, chandle, runblock_settings, chARange)
-                # calibrate the CT offset
-                dataRUL['current_alpha'] = np.array(dataRUL['current_alpha']) - np.mean(np.array(dataRUL['current_alpha']))
-                dataRUL['current_beta'] = np.array(dataRUL['current_beta']) - np.mean(np.array(dataRUL['current_beta']))
 
                 if not err_sts:
                     RUL_newest_numbers[j]=RUL_newest_numbers[j]+1
                     Rul_folder_name = f"{Data_folder}/Update_data/RUL_data/RUL_{current_device_number + 1}"
                     CSV_file_name = f"{Rul_folder_name}/RUL_Data_{current_device_number + 1}_{RUL_newest_numbers[j]}.csv"
-                    Data_handle.data_update_RUL_csv(ser, current_device_number + 1, CSV_file_name, dataRUL, retries=5, delay=1)
+                    # Data_handle.data_update_RUL_csv(ser, current_device_number + 1, CSV_file_name, dataRUL, retries=5, delay=1)
+                    Data_handle.data_update_RUL_parquet(ser, current_device_number + 1, motor_cond,CSV_file_name, dataRUL
+                                                        , retries=5, delay=1)  # save by parquet file
+
                     # print the collection  message
                     print(f'Device' + str(current_device_number+1) + ' RUL data ' + str(
                         RUL_newest_numbers[j]) + ' is saved, time:', time.strftime(" %H:%M:%S", time.localtime()))
@@ -295,6 +294,7 @@ def motor_acc_check(ser,online_device_indices):
         global status, chandle, runblock_settings,chARange
         with lock:
             for i in range(len(online_device_indices)):
+                # print(f'acc status check for device {online_device_indices[i]+1}, time : {time.strftime("%H:%M:%S", time.localtime())}')
                 # run the pico block to check acc level
                 r_pico.runblock_pico_A(status, chandle, runblock_settings)
                 # ge pico acc data and its rms
@@ -345,7 +345,6 @@ def main():
             online_devices = [index for index, value in enumerate(device_status) if value != 0]
             online_device_indices = [index for index, value in enumerate(device_status) if value != 0]
             RUL_newest_numbers = [1] * len(online_device_indices)
-
             if not online_devices:
                 if DEBUG:
                     print("No online devices found, entering debug mode...")
@@ -354,32 +353,49 @@ def main():
                     input("按 Enter 鍵退出...")
                     sys.exit()
 
-            Data_folder, RUL_newest_numbers = check_and_create_folders(Motor_global_vars.Data_folder_path, online_device_indices, RUL_newest_numbers)
-
-            # servo on the motors
-            for i in range(len(online_device_indices)):
-                command_485.servo_control(online_device_indices[i] + 1, ser, 1)
-            time.sleep(1)  # wait for the motor to be ready
-
             # set up figures
             n = len(online_devices)
             figs, axs_list = [], []
             for i in range(len(online_devices)):
-                fig, axs = plt.subplots(4, 1, sharex=True, figsize=(6, 8))
-                fig.suptitle(f"Sensor {online_devices[i]+1} Data")
+                fig, axs = plt.subplots(3, 1, sharex=True, figsize=(6, 8))
+                fig.suptitle(f"Sensor {online_devices[i] + 1} Data")
                 figs.append(fig)
                 axs_list.append(axs)
+
+            # setup the data folder
+            Data_folder, RUL_newest_numbers = check_and_create_folders(Motor_global_vars.Data_folder_path, online_device_indices, RUL_newest_numbers)
+
+            # setup the plot
+
+            # calibration CT oset and servo on the motors
+            for i in range(len(online_device_indices)):
+
+                # calibrate the CT offset
+                dataRUL, _, _ = command_485.get_all_RUL_pack(ser, online_device_indices[i]  + 1,AQ_data_length*4 )
+                offset_alpha= (np.mean(np.array(dataRUL['current_alpha']))-32767)/32768
+                offset_beta = (np.mean(np.array(dataRUL['current_beta']))-32767)/32768
+                command_485.set_ct_offset(ser, online_device_indices[i] + 1, 0.1, offset_alpha, offset_beta, 'CT')
+
+                # wait ASRAM update
+                time.sleep(1)
+                # plot the sensory data after calibration
+                dataRUL, _, _ = command_485.get_all_RUL_pack(ser, online_device_indices[i] + 1, AQ_data_length)
+                plot_sensory_data_pico(figs[i], axs_list[i], dataRUL['voltage_alpha'], dataRUL['voltage_beta'],
+                                       dataRUL['current_alpha'], dataRUL['current_beta'])
+                # servo on and wait for the motor to be ready
+                command_485.servo_control(online_device_indices[i] + 1, ser, 1)
+                command_485.reset_AQbox_FAST(ser, online_device_indices[i] + 1)
+                time.sleep(1)
 
             # run the first collection
             collect_rul_data(ser, online_device_indices, RUL_newest_numbers, Data_folder, AQ_data_length, figs, axs_list)
 
             # 使用 schedule 定時執行
-            schedule.every(20).seconds.do(collect_rul_data, ser, online_device_indices, RUL_newest_numbers,
+            schedule.every(Motor_global_vars.rul_update_period).seconds.do(collect_rul_data, ser, online_device_indices, RUL_newest_numbers,
                                                   Data_folder, AQ_data_length, figs, axs_list)
 
             # check the motor acceleration value every 5 seconds
-            schedule.every(5).seconds.do(collect_rul_data, ser, online_device_indices, RUL_newest_numbers,
-                                          Data_folder, AQ_data_length, figs, axs_list)
+            schedule.every(5).seconds.do(motor_acc_check, ser, online_device_indices)
 
             # clear the terminal every hour
             schedule.every().hour.do(clear_terminal)
