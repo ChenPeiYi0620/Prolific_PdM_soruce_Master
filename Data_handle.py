@@ -10,7 +10,7 @@ import pandas as pd
 
 
 # save the RUL data into the parquet file with pandas dataframe
-def data_update_RUL_parquet(ser, device_num, motor_cond, filename, unpack_rul_data, retries=5, delay=1):
+def data_update_RUL_parquet(ser, device_num, motor_cond, filename, unpack_rul_data, raw_pico_data, retries=5, delay=1):
     # rul data save status
     rul_data_is_save = 0
     # for motor online check
@@ -32,16 +32,19 @@ def data_update_RUL_parquet(ser, device_num, motor_cond, filename, unpack_rul_da
 
         motor_cond_out_list = get_motor_cond_list(motor_cond)
         # conditions: 'Speed(Rpm)', 'Torque(N)', 'Power(KW)', 'Efficiency(%)', 'Efficiency_alarm'
+        acc_rms = np.sqrt(np.mean((np.array(raw_pico_data) - np.mean(np.array(raw_pico_data))** 2)))
         data = {
             "Unix Time": [str(int(time.time()))],       # Unix 時間
             "Speed": [motor_cond_out_list[0]],          # 力矩 (Nm)
             "Torque": [motor_cond_out_list[1]],         # 效率 (%)
             "Power": [motor_cond_out_list[2]],          # 轉速 (RPM)
             "Efficiency": [motor_cond_out_list[3]],     # 功率 (W)
+            "vibration rms":[acc_rms],
             "Voltage alpha": [voltage_alpha_out],
             "Voltage beta": [voltage_beta_out],
             "Current alpha": [current_alpha_out],
             "Current beta": [current_beta_out],
+            "raw_pico_data":[raw_pico_data],
         }
         # create a DataFrame
         df_tosave = pd.DataFrame(data)
