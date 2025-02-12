@@ -32,6 +32,7 @@ AQ_data_length = Motor_global_vars.data_length  # Signal length
 
 # peripheral device declaration
 status, chandle, runblock_settings, chARange = None, None, None, None
+acc_alarm_count=0
 
 # Initialize lock for synchronization
 lock = Lock()
@@ -300,7 +301,7 @@ def motor_acc_check(ser,online_device_indices):
                 # ge pico acc data and its rms
                 chARange, pico_data = r_pico.get_pico_values(status, chandle, runblock_settings, chARange)
                 acc_rms = np.sqrt(np.mean((pico_data - np.mean(pico_data)) ** 2))
-                # print(f'Current acc rms of device {current_device_number} is : {acc_rms:.5f}')
+                print(f' Device {online_device_indices[i]+1} vibration rms : {acc_rms:.5f}, time : {time.strftime("%H:%M:%S", time.localtime())}')
                 if acc_rms>Motor_global_vars.acc_threshold:
                     global acc_alarm_count #stop collection if vibration alarm trigger too many times
                     acc_alarm_count=acc_alarm_count+1 if acc_alarm_count>5 else close_program(ser, status, chandle, f'Vibration alarm{acc_rms:.5f}' )
