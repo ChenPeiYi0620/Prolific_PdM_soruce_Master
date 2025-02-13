@@ -13,6 +13,7 @@ import Data_handle_in_IPC
 from threading import Lock
 import matplotlib.pyplot as plt
 import rul_pico_functions as r_pico
+from picosdk.ps4000 import ps4000 as ps
 import math
 
 
@@ -33,6 +34,7 @@ AQ_data_length = Motor_global_vars.data_length  # Signal length
 # peripheral device declaration
 status, chandle, runblock_settings, chARange = None, None, None, None
 acc_alarm_count=0
+
 
 # Initialize lock for synchronization
 lock = Lock()
@@ -116,7 +118,9 @@ def plot_sensory_data_pico(fig,axs, v_alpha, v_beta, i_alpha, i_beta, acc_data=N
     axs[1].legend()
 
     # 子圖3：繪製 flux_alpha 與 flux_beta
-    axs[2].plot(acc_data, label="acceleration")
+    global chARange
+    pico_gain_str = [k for k, v in ps.PS4000_RANGE.items() if v == chARange]
+    axs[2].plot(acc_data, label=f"acceleration: {pico_gain_str}")
     axs[2].set_title("Pico acc result ")
     axs[2].legend()
 
@@ -304,8 +308,8 @@ def motor_acc_check(ser,online_device_indices):
                 print(f' Device {online_device_indices[i]+1} vibration rms : {acc_rms:.5f}, time : {time.strftime("%H:%M:%S", time.localtime())}')
                 if acc_rms>Motor_global_vars.acc_threshold:
                     global acc_alarm_count #stop collection if vibration alarm trigger too many times
-                    acc_alarm_count=acc_alarm_count+1 if acc_alarm_count>5 else close_program(ser, status, chandle, f'Vibration alarm{acc_rms:.5f}' )
-
+                    acc_alarm_count=acc_alarm_count+1 if acc_alarm_count<3 else close_program(ser, status, chandle, f'Vibration alarm{acc_rms:.5f}, trigger times: {acc_alarm_count}' )
+s
 
 
 def main():

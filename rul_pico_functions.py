@@ -14,19 +14,21 @@ from picosdk.functions import adc2mV, assert_pico_ok
 
 acc_gain=200 # gain of accelerometer
 pico_range_dict={
-"PS4000_ACCELEROMETER_20MV":40,
-    "PS4000_ACCELEROMETER_50MV":100,
-    "PS4000_ACCELEROMETER_100MV":200,
-    "PS4000_ACCELEROMETER_200MV":400,
-    "PS4000_ACCELEROMETER_500MV":1000,
-    "PS4000_ACCELEROMETER_1V":2000,
-    "PS4000_ACCELEROMETER_2V":4000,
-    "PS4000_ACCELEROMETER_5V":10000,
-    "PS4000_ACCELEROMETER_10V":20000,
-    "PS4000_ACCELEROMETER_20V":40000,
-    "PS4000_ACCELEROMETER_50V":100000,
-    "PS4000_ACCELEROMETER_100V":200000,
+"PS4000_ACCELEROMETER_20MV":40,         # 40mv pk2pk
+    "PS4000_ACCELEROMETER_50MV":100,    # 40mv pk2pk
+    "PS4000_ACCELEROMETER_100MV":200,   # 200mv pk2pk
+    "PS4000_ACCELEROMETER_200MV":400,   # 400mv pk2pk
+    "PS4000_ACCELEROMETER_500MV":1000,  # 1000mv pk2pk
+    "PS4000_ACCELEROMETER_1V":2000,     # 2000mv pk2pk
+    "PS4000_ACCELEROMETER_2V":4000,     # 4000mv pk2pk
+    "PS4000_ACCELEROMETER_5V":10000,    # 10000mv pk2pk
+    "PS4000_ACCELEROMETER_10V":20000,   # 20000mv pk2pk
+    "PS4000_ACCELEROMETER_20V":40000,   # 40000mv pk2pk
+    "PS4000_ACCELEROMETER_50V":100000,  # 100000mv pk2pk
+    "PS4000_ACCELEROMETER_100V":200000, # 20000040mv pk2pk
 }
+# initialize overflow trigger times
+overflow_cnt=0
 
 def pico_setup_acc(data_length):
 
@@ -167,23 +169,30 @@ def get_pico_values(status, chandle, runblock_settings, chARange):
     # pointer to overflow = ctypes.byref(overflow))
     status["getValues"] = ps.ps4000GetValues(chandle, 0, ctypes.byref(cmaxSamples), 0, 0, 0, ctypes.byref(overflow))
     assert_pico_ok(status["getValues"])
-    global acc_gain
-    if overflow:
+
+    global acc_gain # accelerometer gain
+    # convert ADC result to acceleration in g
+    # byte data  to g, 1000(if +-500mV)/65535*1g/1021mV
+    pico_gain_str = [k for k, v in ps.PS4000_RANGE.items() if v == chARange]
+    adc2gChAMax = [x * pico_range_dict[pico_gain_str[0]] / 65535 / 1021 for x in bufferAMax]
+
+    # adjust scale if vibration out of range too many times
+    global  overflow_cnt
+    if overflow and overflow_cnt>2:
         chARange =chARange+1
         pico_range = next((k for k, v in ps.PS4000_RANGE.items() if v == chARange), None)
         status["setChA"] = ps.ps4000SetChannel(chandle, 0, 1, 1, chARange)
         assert_pico_ok(status["setChA"])
         print(f'Pico overflow, change ADC range to {pico_range}')
-        # print(f'chARange: {chARange}')
         acc_gain = pico_range_dict[pico_range]
-
-    # convert ADC result to acceleration in g
-    # byte data  to g, 1000(if +-500mV)/65535*1g/1021mV
-    adc2gChAMax = [x * acc_gain / 65535 / 1021 for x in bufferAMax]
+        overflow_cnt=0 # reset the overflow time
+    else:
+        overflow_cnt+=1 # count the overflow times
 
     return chARange, adc2gChAMax
 
 def pico_close(status,chandle):
+
     # Close unit Disconnect the scope
     # handle = chandle
     status["close"] = ps.ps4000CloseUnit(chandle)
