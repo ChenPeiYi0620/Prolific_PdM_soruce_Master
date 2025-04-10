@@ -60,7 +60,6 @@ def set_device_para(ser,device_num,delay=0.1,Rs=3.3,Ls=0.1,P=8, CT_gain=184.668)
     Ls_bytes_data = list(struct.pack('<f', Ls))
     CT_gain_bytes_data = list(struct.pack('<f', CT_gain))
 
-
     set_status=0
 
     cmd = [1, device_num, 6]+Rs_bytes_data+Ls_bytes_data+CT_gain_bytes_data+[P]
@@ -70,6 +69,38 @@ def set_device_para(ser,device_num,delay=0.1,Rs=3.3,Ls=0.1,P=8, CT_gain=184.668)
     ser.flush()  # flush output buffer
     time.sleep(delay)
     data = ser.read(15)  # read all buffer data or wait for one byte data
+    ser.flushInput()  # flush input buffer
+    if data:  # if device is online, a int 5 will be response
+        if not(len(data)==15): #length incorrect
+            return set_status
+        data_eco = list(data)
+        data_eco=data_eco[1:]
+        cmd_check=cmd[3:]
+        cmd_check.insert(0, device_num)
+        if (cmd_check==data_eco):
+            set_status=1 # parameter set success
+            return set_status
+        else:
+            return set_status
+    else:
+        return set_status
+
+def set_computation_result(ser,device_num,delay=0.1, m_wave_number=0):
+    # Convert m_wave_number to a 16-bit integer and split into two 8-bit values
+    m_wave_number_16bit = int(m_wave_number) & 0xFFFF  # Ensure it's a 16-bit integer
+    m_wave_number_high = (m_wave_number_16bit >> 8) & 0xFF  # High 8 bits
+    m_wave_number_low = m_wave_number_16bit & 0xFF  # Low 8 bits
+    cmd_content = [m_wave_number_high, m_wave_number_low]
+
+    set_status=0
+
+    cmd = [1, device_num, 11]+cmd_content
+
+    byte_cmd = bytes(cmd)
+    ser.write(byte_cmd)
+    ser.flush()  # flush output buffer
+    time.sleep(delay)
+    data = ser.read(4)  # read all buffer data or wait for one byte data
     ser.flushInput()  # flush input buffer
     if data:  # if device is online, a int 5 will be response
         if not(len(data)==15): #length incorrect

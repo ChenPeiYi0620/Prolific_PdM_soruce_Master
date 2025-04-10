@@ -52,7 +52,7 @@ Data_folder_path=Data_folder_path[0]
 sampling_rate=20000
 
 # vibration alarm threshold (g)
-acc_threshold=0.2
+acc_threshold=0.5
 
 # for motor ID
 motor_id={

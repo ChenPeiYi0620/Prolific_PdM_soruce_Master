@@ -7,7 +7,11 @@ import numpy as np
 import Motor_global_vars
 import command_485
 import pandas as pd
+import json
 
+
+def array_to_json(arr):
+    return json.dumps(arr.tolist())
 
 # save the RUL data into the parquet file with pandas dataframe
 def data_update_RUL_parquet(ser, device_num, motor_cond, filename, unpack_rul_data, raw_pico_data, retries=5, delay=1):
@@ -75,6 +79,114 @@ def data_update_RUL_parquet(ser, device_num, motor_cond, filename, unpack_rul_da
 
     return rul_data_is_save
 
+
+def data_update_RUL_essemble(ser, device_num, motor_cond, filename, unpack_rul_data, raw_pico_data, retries=5, delay=1):
+    # rul data save status
+    rul_data_is_save = 0
+    # for motor online check
+    current_raw_alpha = u16_to_true_data(np.array(unpack_rul_data['current_alpha']), 1)
+    current_raw_beta = u16_to_true_data(np.array(unpack_rul_data['current_beta']), 1)
+    current_raw_alpha_mean_rms = np.sqrt(np.mean((current_raw_alpha - np.mean(current_raw_alpha)) ** 2))
+    motor_onine_flag = True  # for test only
+    # motor_onine_flag = True if current_raw_alpha_mean_rms > 0.05 else False
+
+    if motor_onine_flag:  # if motor is online, save the rul data
+        voltage_alpha_out = u16_to_true_data(np.array(unpack_rul_data['voltage_alpha']), Motor_global_vars.Base_voltage)
+        voltage_beta_out = u16_to_true_data(np.array(unpack_rul_data['voltage_beta']), Motor_global_vars.Base_voltage)
+        # current_alpha_out = np.array(unpack_rul_data['current_alpha'])
+        # current_beta_out  = np.array(unpack_rul_data['current_beta'])
+        current_alpha_out = u16_to_true_data(np.array(unpack_rul_data['current_alpha']), Motor_global_vars.Base_current)
+        current_beta_out = u16_to_true_data(np.array(unpack_rul_data['current_beta']), Motor_global_vars.Base_current)
+        rul_out_data = np.vstack((voltage_alpha_out, voltage_beta_out, current_alpha_out, current_beta_out,
+                                  np.array(unpack_rul_data['error_record'])))
+
+        motor_cond_out_list = get_motor_cond_list(motor_cond)
+        # conditions: 'Speed(Rpm)', 'Torque(N)', 'Power(KW)', 'Efficiency(%)', 'Efficiency_alarm'
+        raw_pico_arr = np.array(raw_pico_data)
+        acc_rms = np.sqrt(np.mean((raw_pico_arr - np.mean(raw_pico_arr)) ** 2))
+
+       
+        # original data format
+        # data = {
+        #     "Unix Time": [str(int(time.time()))],       # Unix 時間
+        #     "Speed": [motor_cond_out_list[0]],          # 力矩 (Nm)
+        #     "Torque": [motor_cond_out_list[1]],         # 效率 (%)
+        #     "Power": [motor_cond_out_list[2]],          # 轉速 (RPM)
+        #     "Efficiency": [motor_cond_out_list[3]],     # 功率 (W)
+        #     "vibration rms":[acc_rms],
+        #     "Voltage alpha": [voltage_alpha_out],
+        #     "Voltage beta": [voltage_beta_out],
+        #     "Current alpha": [current_alpha_out],
+        #     "Current beta": [current_beta_out],
+        #     "raw_pico_data":[raw_pico_data],
+        # }
+
+        # json data format
+        data = {
+            "Unix Time": [str(int(time.time()))],
+            "Speed": [motor_cond_out_list[0]],
+            "Torque": [motor_cond_out_list[1]],
+            "Power": [motor_cond_out_list[2]],
+            "Efficiency": [motor_cond_out_list[3]],
+            "vibration rms": [str(acc_rms.tolist()) if hasattr(acc_rms, 'tolist') else str(acc_rms)],
+            "Voltage alpha": [array_to_json(voltage_alpha_out)],
+            "Voltage beta": [array_to_json(voltage_beta_out)],
+            "Current alpha": [array_to_json(current_alpha_out)],
+            "Current beta": [array_to_json(current_beta_out)],
+            "raw_pico_data": [array_to_json(np.array(raw_pico_data))],
+        }
+
+        # create a DataFrame
+        df_tosave = pd.DataFrame(data)
+
+        # Append the latest data to the HDF5 file
+        try:
+            with pd.HDFStore(filename, mode='a') as store:
+                if 'data' in store:
+                    existing_df = store['data']
+                    updated_df = pd.concat([existing_df, df_tosave], ignore_index=True)
+                    store.put('data', updated_df)
+                else:
+                    store.put('data', df_tosave)
+        except Exception as e:
+            print(f'Error while appending to HDF5 file: {e}')
+
+    else:
+        voltage_raw_alpha = u16_to_true_data(np.array(unpack_rul_data['voltage_alpha']), 1)
+        voltage_raw_beta = u16_to_true_data(np.array(unpack_rul_data['voltage_beta']), 1)
+        vac_alpha_offset = np.mean(voltage_raw_alpha)
+        vac_beta_offset = np.mean(voltage_raw_beta)
+        command_485.set_ct_offset(ser, device_num, delay=0.1, ct_offset_alpha=vac_alpha_offset,
+                                  ct_offset_beta=vac_beta_offset, sensor='VAC')
+        ct_alpha_offset = np.mean(current_raw_alpha)
+        ct_beta_offset = np.mean(current_raw_beta)
+        command_485.set_ct_offset(ser, device_num, delay=0.1, ct_offset_alpha=ct_alpha_offset,
+                                  ct_offset_beta=ct_beta_offset, sensor='CT')
+
+    return rul_data_is_save
+
+
+def get_fundmental_freq(signal_real, signal_imag, sampling_rate):
+    L=len(signal_real)
+    signal_complex = signal_real + 1j * signal_imag
+    signal_complex = signal_complex.flatten()
+    N = len(signal_complex)
+    fft_vals = np.fft.fft(signal_complex, n=N)
+    fft_vals_shifted = np.fft.fftshift(fft_vals)
+    freqs = np.fft.fftshift(np.fft.fftfreq(N, d=1 / sampling_rate))
+    # fft_result = np.abs(fft_vals_shifted) / N
+    fft_result_cplx = fft_vals_shifted / N
+    
+    fft_result=np.abs(fft_result_cplx)  # get the magnitude of fft result
+    
+    # find frequency index of characteristic frequencies
+    fund_freq_idx = np.argmax(fft_result)
+    minus1_freq_idx = L - fund_freq_idx
+    minus1_freq = freqs[minus1_freq_idx]
+    fund_freq = freqs[fund_freq_idx]
+
+    
+    return fund_freq
 
 # save the RUL data into the csv file
 def data_update_RUL_csv (ser, device_num, file_path, unpack_rul_data, retries=5,delay=1):

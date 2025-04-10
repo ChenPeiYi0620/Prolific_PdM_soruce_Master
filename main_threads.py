@@ -276,10 +276,15 @@ def collect_rul_data(ser, online_device_indices, RUL_newest_numbers, Data_folder
                     RUL_newest_numbers[j]=RUL_newest_numbers[j]+1
                     Rul_folder_name = f"{Data_folder}/Update_data/RUL_data/RUL_{current_device_number + 1}"
                     CSV_file_name = f"{Rul_folder_name}/RUL_Data_{current_device_number + 1}_{RUL_newest_numbers[j]}.csv"
-                    # Data_handle.data_update_RUL_csv(ser, current_device_number + 1, CSV_file_name, dataRUL, retries=5, delay=1)
-                    Data_handle.data_update_RUL_parquet(ser, current_device_number + 1, motor_cond,CSV_file_name, dataRUL, pico_data
+                   
+                    # # Data_handle.data_update_RUL_csv(ser, current_device_number + 1, CSV_file_name, dataRUL, retries=5, delay=1)
+                    # Data_handle.data_update_RUL_parquet(ser, current_device_number + 1, motor_cond,CSV_file_name, dataRUL, pico_data
+                    #                                     , retries=5, delay=1)  # save by parquet file
+                    
+                    essemble_file_name = f"{Rul_folder_name}/RUL_Data_{current_device_number + 1}.h5"
+                    Data_handle.data_update_RUL_essemble(ser, current_device_number + 1, motor_cond,essemble_file_name, dataRUL, pico_data
                                                         , retries=5, delay=1)  # save by parquet file
-
+                    
                     # print the collection  message
                     print(f'Device' + str(current_device_number+1) + ' RUL data ' + str(
                         RUL_newest_numbers[j]) + ' is saved, time:', time.strftime(" %H:%M:%S", time.localtime()))
@@ -309,8 +314,6 @@ def motor_acc_check(ser,online_device_indices):
                 if acc_rms>Motor_global_vars.acc_threshold:
                     global acc_alarm_count #stop collection if vibration alarm trigger too many times
                     acc_alarm_count=acc_alarm_count+1 if acc_alarm_count<3 else close_program(ser, status, chandle, f'Vibration alarm{acc_rms:.5f}, trigger times: {acc_alarm_count}' )
-s
-
 
 def main():
     print('AQbox data collection program start, version 1.0')
@@ -381,15 +384,27 @@ def main():
                 offset_beta = (np.mean(np.array(dataRUL['current_beta']))-32767)/32768
                 command_485.set_ct_offset(ser, online_device_indices[i] + 1, 0.1, offset_alpha, offset_beta, 'CT')
 
-                # wait ASRAM update
-                time.sleep(1)
                 # plot the sensory data after calibration
-                dataRUL, _, _ = command_485.get_all_RUL_pack(ser, online_device_indices[i] + 1, AQ_data_length)
                 plot_sensory_data_pico(figs[i], axs_list[i], dataRUL['voltage_alpha'], dataRUL['voltage_beta'],
                                        dataRUL['current_alpha'], dataRUL['current_beta'])
                 # servo on and wait for the motor to be ready
                 command_485.servo_control(online_device_indices[i] + 1, ser, 1)
                 command_485.reset_AQbox_FAST(ser, online_device_indices[i] + 1)
+
+                
+                # wait ASRAM update
+                time.sleep(2)
+                dataRUL, _, _ = command_485.get_all_RUL_pack(ser, online_device_indices[i] + 1, AQ_data_length*4)
+                plot_sensory_data_pico(figs[i], axs_list[i], dataRUL['voltage_alpha'], dataRUL['voltage_beta'],
+                                       dataRUL['current_alpha'], dataRUL['current_beta'])
+                current_alpha_out = Data_handle.u16_to_true_data(np.array(dataRUL['current_alpha']), Motor_global_vars.Base_current)
+                current_beta_out = Data_handle.u16_to_true_data(np.array(dataRUL['current_beta']), Motor_global_vars.Base_current)
+                fund_freq = max(1, Data_handle.get_fundmental_freq(current_alpha_out, current_beta_out, Motor_global_vars.sampling_rate))
+                print(f'fundamental frequency: {fund_freq}, rpm={fund_freq*60/2/Motor_global_vars.Motor_P}')
+                m_wave_number_fft = int( Motor_global_vars.sampling_rate/fund_freq/2) # 取樣點數
+                command_485.set_computation_result(ser, online_device_indices[i] + 1, delay=0.1, m_wave_number=m_wave_number_fft)
+
+
                 time.sleep(1)
 
             # run the first collection
