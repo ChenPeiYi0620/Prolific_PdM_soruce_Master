@@ -1,0 +1,8 @@
+# 忽略所有檔案
+*
+
+# 但例外 .gitignore 本身
+!.gitignore
+
+# 例外 .py 檔案（追蹤所有 .py）
+!*.py

@@ -105,6 +105,12 @@ def data_update_RUL_essemble(ser, device_num, motor_cond, filename, unpack_rul_d
         raw_pico_arr = np.array(raw_pico_data)
         acc_rms = np.sqrt(np.mean((raw_pico_arr - np.mean(raw_pico_arr)) ** 2))
 
+        fund_freq = max(1, get_fundmental_freq(current_alpha_out, current_beta_out, Motor_global_vars.sampling_rate))
+        print(f'fundamental frequency: {fund_freq}, rpm={fund_freq*60/2/Motor_global_vars.Motor_P}')
+        m_wave_number_fft = int( Motor_global_vars.sampling_rate/fund_freq/2) # 取樣點數
+        command_485.set_computation_result(ser, device_num, delay=0.1, m_wave_number=m_wave_number_fft)
+
+
        
         # original data format
         # data = {

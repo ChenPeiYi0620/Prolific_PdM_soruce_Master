@@ -46,8 +46,8 @@ def pico_setup_acc(data_length):
     # channel = PS4000_CHANNEL_A = 0
     # enabled = 1
     # coupling type = PS4000_DC = 1
-    chARange = ps.PS4000_RANGE["PS4000_ACCELEROMETER_500MV"]
-    # chARange = ps.PS4000_RANGE["PS4000_ACCELEROMETER_50MV"]
+    # chARange = ps.PS4000_RANGE["PS4000_ACCELEROMETER_500MV"]
+    chARange = ps.PS4000_RANGE["PS4000_ACCELEROMETER_1V"]
     status["setChA"] = ps.ps4000SetChannel(chandle, 0, 1, 1, chARange)
     assert_pico_ok(status["setChA"])
 

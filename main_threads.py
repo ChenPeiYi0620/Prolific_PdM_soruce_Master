@@ -277,13 +277,13 @@ def collect_rul_data(ser, online_device_indices, RUL_newest_numbers, Data_folder
                     Rul_folder_name = f"{Data_folder}/Update_data/RUL_data/RUL_{current_device_number + 1}"
                     CSV_file_name = f"{Rul_folder_name}/RUL_Data_{current_device_number + 1}_{RUL_newest_numbers[j]}.csv"
                    
-                    # # Data_handle.data_update_RUL_csv(ser, current_device_number + 1, CSV_file_name, dataRUL, retries=5, delay=1)
-                    # Data_handle.data_update_RUL_parquet(ser, current_device_number + 1, motor_cond,CSV_file_name, dataRUL, pico_data
-                    #                                     , retries=5, delay=1)  # save by parquet file
-                    
-                    essemble_file_name = f"{Rul_folder_name}/RUL_Data_{current_device_number + 1}.h5"
-                    Data_handle.data_update_RUL_essemble(ser, current_device_number + 1, motor_cond,essemble_file_name, dataRUL, pico_data
+                    # Data_handle.data_update_RUL_csv(ser, current_device_number + 1, CSV_file_name, dataRUL, retries=5, delay=1)
+                    Data_handle.data_update_RUL_parquet(ser, current_device_number + 1, motor_cond,CSV_file_name, dataRUL, pico_data
                                                         , retries=5, delay=1)  # save by parquet file
+                    
+                    # essemble_file_name = f"{Rul_folder_name}/RUL_Data_{current_device_number + 1}.h5"
+                    # Data_handle.data_update_RUL_essemble(ser, current_device_number + 1, motor_cond,essemble_file_name, dataRUL, pico_data
+                    #                                     , retries=5, delay=1)  # save by essemble h5 file
                     
                     # print the collection  message
                     print(f'Device' + str(current_device_number+1) + ' RUL data ' + str(
