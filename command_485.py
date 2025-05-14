@@ -322,6 +322,65 @@ def get_all_RUL_pack(ser, device_num,data_length):
 
     return RUL_total,err_flags,collect_sts
 
+# get all RUL data in one step (single device)
+def get_all_RUL_pack_bulk(ser, device_num,data_length):
+   
+    RUL_data  = [0] * data_length
+    RUL_data1 = [0] * data_length
+    RUL_data2 = [0] * data_length
+    RUL_data3 = [0] * data_length
+    collect_sts=0  #transmit status
+    error_records = [0] * data_length  # Initialize error records
+    
+    # Split data_length into two bytes
+    data_length_high = (data_length >> 8) & 0xFF  # High byte
+    data_length_low = data_length & 0xFF  # Low byte
+    
+    #bulk 模式命令 
+    cmd = [1, device_num, 12, data_length_high, data_length_low]
+    # 下達命令
+    byte_cmd = bytes(cmd)
+    ser.reset_input_buffer()
+    ser.write(byte_cmd)
+    ser.flush() 
+    
+    data = bytearray()
+    while True:
+        chunk = ser.read(1024)  # Read 1024 bytes at a time
+        if not chunk:  # Stop reading if no more data (timeout)
+            break
+        data.extend(chunk)
+    # Convert the received data into uint16 values
+    uint16_values = list(struct.unpack(f"<{len(data) // 2}H", data))
+    
+    # get the crc result 
+    crc_result= uint16_values[-1]+uint16_values[0]
+    if crc_result != 65535:
+        print(f"Device {device_num} has incorrect response.")
+        collect_sts=1
+        return None, None, collect_sts
+    
+    # Remove the first and last elements from uint16_values
+    uint16_values = uint16_values[1:-1]
+    for i in range(data_length):
+        RUL_data[i] = uint16_values[i * 4 + 0]
+        RUL_data1[i] = uint16_values[i * 4 + 1]
+        RUL_data2[i] = uint16_values[i * 4 + 2]
+        RUL_data3[i] = uint16_values[i * 4 + 3]
+    time.sleep(0.1)
+    # collection complete, reset the AQbox, enabl AQbox ADC sampling
+    reset_AQbox_FAST(ser, device_num)
+    
+    RUL_total= {
+        'voltage_alpha':    RUL_data,   #voltage alpha
+        'voltage_beta':     RUL_data1,  #voltage beta
+        'current_alpha':    RUL_data2,  #current alpha
+        'current_beta':     RUL_data3,  #current beta
+        'error_record':     [0] * data_length
+    }   
+
+    return RUL_total, error_records, collect_sts
+
 # invalid command, force AQbox to read out the data buffer
 def clear_RFIFO_buffer(ser):
     ser.write([0, 0, 0, 0])

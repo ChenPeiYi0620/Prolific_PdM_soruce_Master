@@ -267,8 +267,10 @@ def collect_rul_data(ser, online_device_indices, RUL_newest_numbers, Data_folder
             motor_cond, cond_err_sts = command_485.get_cond_pack(ser, current_device_number + 1, 3)
 
             while retries < MAX_RETRIES:
-                dataRUL, err_record, err_sts = command_485.get_all_RUL_pack(ser, current_device_number + 1, AQ_data_length * 4)
-
+                timemow=time.time()
+                # dataRUL, err_record, err_sts = command_485.get_all_RUL_pack(ser, current_device_number + 1, AQ_data_length * 4)
+                dataRUL, err_record, err_sts = command_485.get_all_RUL_pack_bulk(ser, current_device_number + 1, AQ_data_length * 4)
+                print(f'collect time:{time.time()-timemow}')
                 # ge pico acc data and its rms
                 chARange, pico_data = r_pico.get_pico_values(status, chandle, runblock_settings, chARange)
 
@@ -377,7 +379,9 @@ def main():
 
             # calibration CT oset and servo on the motors
             for i in range(len(online_device_indices)):
-
+                
+                command_485.get_all_RUL_pack_bulk(ser, online_device_indices[i]+1, AQ_data_length*4)
+                
                 # calibrate the CT offset
                 dataRUL, _, _ = command_485.get_all_RUL_pack(ser, online_device_indices[i]  + 1,AQ_data_length*4 )
                 offset_alpha= (np.mean(np.array(dataRUL['current_alpha']))-32767)/32768
@@ -394,6 +398,7 @@ def main():
                 
                 # wait ASRAM update
                 time.sleep(2)
+                print('preparing for the motor to be ready, please wait...')
                 dataRUL, _, _ = command_485.get_all_RUL_pack(ser, online_device_indices[i] + 1, AQ_data_length*4)
                 plot_sensory_data_pico(figs[i], axs_list[i], dataRUL['voltage_alpha'], dataRUL['voltage_beta'],
                                        dataRUL['current_alpha'], dataRUL['current_beta'])
@@ -406,10 +411,15 @@ def main():
 
 
                 time.sleep(1)
-
+                
+            print("All motors are ready, start data collection...")
+            
             # run the first collection
+            timenow = time.time()
             collect_rul_data(ser, online_device_indices, RUL_newest_numbers, Data_folder, AQ_data_length, figs, axs_list)
-
+            
+            print('rule collection run time: ', (time.time() - timenow))
+            
             # 使用 schedule 定時執行
             schedule.every(Motor_global_vars.rul_update_period).seconds.do(collect_rul_data, ser, online_device_indices, RUL_newest_numbers,
                                                   Data_folder, AQ_data_length, figs, axs_list)
@@ -423,7 +433,7 @@ def main():
             try:
                 while True:
                     schedule.run_pending()  # 執行所有排程的任務
-                    time.sleep(1)  # 減少 CPU 使用率，確保任務按時執行
+                    time.sleep(0.1)  # 減少 CPU 使用率，確保任務按時執行
             except KeyboardInterrupt:
                 close_program(ser, status, chandle, " interrupted by user.")
 

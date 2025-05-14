@@ -61,6 +61,7 @@ def data_update_RUL_parquet(ser, device_num, motor_cond, filename, unpack_rul_da
                      filename=base + ".parquet"
                 df_tosave.to_parquet(filename, engine="pyarrow")
                 rul_data_is_save = 1  # rul data save success
+                break  # exit the loop if save is successful
             except Exception as e:
                 print(f'file saving error : {e}')
                 print(f'{filename} open fail, try again {delay}s later ')
