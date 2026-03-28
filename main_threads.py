@@ -14,12 +14,23 @@ from threading import Lock
 import matplotlib.pyplot as plt
 import rul_pico_functions as r_pico
 from picosdk.ps4000 import ps4000 as ps
+from rul_features.rul_data_read import read_rul_data
+import re,shutil,csv
 import math
 
 
 
-# Debug flag, fake the data collection if True
+# Debug flag if true the program will run debug mode, not collect data but only run the scheduling and plot demo functions
+# no device connection recquired in debug mode, and the plot will show test data
 DEBUG = False
+# DEBUG = True # for schedule and obsever test 
+
+# ccae test counter 
+CCAE_test_mode=True 
+ccae_counter = {"count": 0, "times": 100}
+
+
+
 # FAST data collection method flag
 FAST_in_IPC = True
 # record the package error times
@@ -48,13 +59,17 @@ def clear_terminal():
         os.system('cls' if os.name == 'nt' else 'clear')
         print("終端已清除")
 
-def close_program(ser,status, chandle, stop_reason=" "):
+def close_program(ser,status, chandle, stop_reason=" ", Data_folder=""):
     for current_device_number in range(8):
+        print('closing device ', current_device_number+1)
         command_485.servo_control(current_device_number, ser, 0)
     if ser.is_open:
         ser.close()
     r_pico.pico_close(status, chandle)
     print (" Program is stopped: ", stop_reason)
+    print ("program stopped, calibrating voltages ...")
+    list_voltage_thd(f"{Data_folder}/Update_data/RUL_data/RUL_{3}")
+
     input("按 Enter 鍵退出...")
     sys.exit()
 
@@ -251,9 +266,19 @@ def collect_fast_data(ser, online_device_indices, Data_folder, AQ_data_length, f
 
 
 def collect_rul_data(ser, online_device_indices, RUL_newest_numbers, Data_folder, AQ_data_length, figs, axs_list):
+    
+
     """Function to collect RUL data while ensuring mutual exclusion."""
     with lock:
         global status, chandle, runblock_settings, chARange
+        
+        if CCAE_test_mode:
+            ccae_counter["count"] += 1
+        if ccae_counter["count"] >= ccae_counter["times"]:
+            ccae_counter["count"] = 0
+            print(f"CCAETest: {ccae_counter['count']} times, close the program")
+            close_program(ser, status, chandle, "CCAETest: close the program after 20 times", Data_folder)
+        
         if DEBUG:
             print("Collecting RUL data..., current time:", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
             return # Debugging
@@ -282,6 +307,8 @@ def collect_rul_data(ser, online_device_indices, RUL_newest_numbers, Data_folder
                     # Data_handle.data_update_RUL_csv(ser, current_device_number + 1, CSV_file_name, dataRUL, retries=5, delay=1)
                     Data_handle.data_update_RUL_parquet(ser, current_device_number + 1, motor_cond,CSV_file_name, dataRUL, pico_data
                                                         , retries=5, delay=1)  # save by parquet file
+
+
                     
                     # essemble_file_name = f"{Rul_folder_name}/RUL_Data_{current_device_number + 1}.h5"
                     # Data_handle.data_update_RUL_essemble(ser, current_device_number + 1, motor_cond,essemble_file_name, dataRUL, pico_data
@@ -292,6 +319,9 @@ def collect_rul_data(ser, online_device_indices, RUL_newest_numbers, Data_folder
                         RUL_newest_numbers[j]) + ' is saved, time:', time.strftime(" %H:%M:%S", time.localtime()))
                     plot_sensory_data_pico(figs[j], axs_list[j], dataRUL['voltage_alpha'], dataRUL['voltage_beta'],
                                            dataRUL['current_alpha'], dataRUL['current_beta'], pico_data)
+
+                    if RUL_newest_numbers[j]>=Motor_global_vars.collection_times:
+                        close_program(ser, status, chandle, f"reach the collection times {Motor_global_vars.collection_times}", Data_folder)
                     break
                 else:
                     retries += 1
@@ -315,7 +345,81 @@ def motor_acc_check(ser,online_device_indices):
                 print(f' Device {online_device_indices[i]+1} vibration rms : {acc_rms:.5f}, time : {time.strftime("%H:%M:%S", time.localtime())}')
                 if acc_rms>Motor_global_vars.acc_threshold:
                     global acc_alarm_count #stop collection if vibration alarm trigger too many times
-                    acc_alarm_count=acc_alarm_count+1 if acc_alarm_count<3 else close_program(ser, status, chandle, f'Vibration alarm{acc_rms:.5f}, trigger times: {acc_alarm_count}' )
+                    acc_alarm_count=acc_alarm_count+1 if acc_alarm_count<3 else close_program(ser, status, chandle, f'Vibration alarm{acc_rms:.5f}, trigger times: {acc_alarm_count}')
+
+# calibrating collected voltages file by file
+def list_voltage_thd(Normal_subfolders):
+    # 列出目標資料夾下的檔案重建誤差以找出離群值
+    """取得指定工況資料夾下的所有檔案，並找出離群值"""
+    # 在 Normal_subfolders 建立子資料夾 voltage_plot
+    voltage_plot_folder = os.path.join(Normal_subfolders, "voltage_plot")
+    outlier_folder = os.path.join(Normal_subfolders, "outlier")
+    if not os.path.exists(voltage_plot_folder):
+        os.makedirs(voltage_plot_folder)
+    if not os.path.exists(outlier_folder):
+        os.makedirs(outlier_folder)
+    # 如果 outlier_folder 內已有檔案則直接跳過
+    if len(os.listdir(outlier_folder)) > 0:
+        print(f"Outlier folder {outlier_folder} is not empty, skipping.")
+        return []
+
+    # 依檔案編號排序
+    parquet_files = [os.path.join(Normal_subfolders, f) for f in os.listdir(Normal_subfolders) if
+                     f.endswith(".parquet")]
+    parquet_files = sorted(parquet_files,
+                           key=lambda x: int(re.search(r"(\d+)\.parquet$", os.path.basename(x)).group(1)))
+    print(parquet_files)
+    voltage_thd_list = []
+    alpha_thd_list = []
+    for file_path in parquet_files:
+        if not os.path.exists(file_path):
+            print(f"File {file_path} does not exist.")
+            continue
+        # 讀取資料
+        df = read_rul_data(file_path, force_recompute=True)
+        if df is None:
+            print(f"File {file_path} could not be read, skipping.")
+            continue
+        voltage_alpha = np.array(df["Voltage alpha downsample"])
+        voltage_beta = np.array(df["Voltage beta downsample"])
+        voltage_alpha_thd = df["Voltage alpha thd"]
+        voltage_beta_thd = df["Voltage beta thd"]
+
+        # 畫圖並儲存
+        plt.figure(figsize=(12, 6))
+        plt.plot(voltage_alpha, label=f'Voltage Alpha thd: {voltage_alpha_thd[0]:.4f}')
+        plt.plot(voltage_beta, label=f'Voltage Beta thd: {voltage_beta_thd[0]:.4f}')
+        plt.title(f'Voltage Alpha/Beta: {os.path.basename(file_path)}')
+        plt.xlabel('Sample')
+        plt.ylabel('Voltage')
+        plt.legend()
+        save_path = os.path.join(voltage_plot_folder, os.path.splitext(os.path.basename(file_path))[0] + '_voltage.png')
+        plt.savefig(save_path)
+        plt.close()
+        alpha_thd_list.append(voltage_alpha_thd[0])
+        voltage_thd_list.append(
+            (os.path.splitext(os.path.basename(file_path))[0], voltage_alpha_thd[0], voltage_beta_thd[0]))
+        # print(f"File: {file_path}, Voltage Alpha THD: {voltage_alpha_thd}, Voltage Beta THD: {voltage_beta_thd}")
+
+    # 找出 alpha_thd_list 最大的五個值的索引並將對應的翻轉不好的電壓檔案移動到 outlier_folder
+    if len(alpha_thd_list) >= Motor_global_vars.outlier_number:
+        alpha_thd_array = np.array(alpha_thd_list)
+        top5_indices = alpha_thd_array.argsort()[-Motor_global_vars.outlier_number:][::-1]
+        for idx in top5_indices:
+            src_file = parquet_files[idx]
+            dst_file = os.path.join(outlier_folder, os.path.basename(src_file))
+            print(f"Moving outlier file: {src_file} -> {dst_file}")
+            shutil.move(src_file, dst_file)
+
+    # 將 voltage_thd_list 存到 CSV
+    csv_save_path = os.path.join(voltage_plot_folder, "voltage_thd_list.csv")
+    with open(csv_save_path, mode='w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['file_path', 'voltage_alpha_thd', 'voltage_beta_thd'])
+        for row in voltage_thd_list:
+            writer.writerow(row)
+    return voltage_thd_list
+
 
 def main():
     print('AQbox data collection program start, version 1.0')
@@ -380,10 +484,10 @@ def main():
             # calibration CT oset and servo on the motors
             for i in range(len(online_device_indices)):
                 
-                command_485.get_all_RUL_pack_bulk(ser, online_device_indices[i]+1, AQ_data_length*4)
+                # command_485.get_all_RUL_pack_bulk(ser, online_device_indices[i]+1, AQ_data_length*4)
                 
                 # calibrate the CT offset
-                dataRUL, _, _ = command_485.get_all_RUL_pack(ser, online_device_indices[i]  + 1,AQ_data_length*4 )
+                dataRUL, _, _ = command_485.get_all_RUL_pack_bulk(ser, online_device_indices[i]  + 1,AQ_data_length*4 )
                 offset_alpha= (np.mean(np.array(dataRUL['current_alpha']))-32767)/32768
                 offset_beta = (np.mean(np.array(dataRUL['current_beta']))-32767)/32768
                 command_485.set_ct_offset(ser, online_device_indices[i] + 1, 0.1, offset_alpha, offset_beta, 'CT')
@@ -399,12 +503,12 @@ def main():
                 # wait ASRAM update
                 time.sleep(2)
                 print('preparing for the motor to be ready, please wait...')
-                dataRUL, _, _ = command_485.get_all_RUL_pack(ser, online_device_indices[i] + 1, AQ_data_length*4)
+                dataRUL, _, _ = command_485.get_all_RUL_pack_bulk(ser, online_device_indices[i] + 1, AQ_data_length*4)
                 plot_sensory_data_pico(figs[i], axs_list[i], dataRUL['voltage_alpha'], dataRUL['voltage_beta'],
                                        dataRUL['current_alpha'], dataRUL['current_beta'])
                 current_alpha_out = Data_handle.u16_to_true_data(np.array(dataRUL['current_alpha']), Motor_global_vars.Base_current)
                 current_beta_out = Data_handle.u16_to_true_data(np.array(dataRUL['current_beta']), Motor_global_vars.Base_current)
-                fund_freq = max(1, Data_handle.get_fundmental_freq(current_alpha_out, current_beta_out, Motor_global_vars.sampling_rate))
+                fund_freq = max(1, Data_handle.get_fundamental_freq(current_alpha_out, current_beta_out, Motor_global_vars.sampling_rate))
                 print(f'fundamental frequency: {fund_freq}, rpm={fund_freq*60/2/Motor_global_vars.Motor_P}')
                 m_wave_number_fft = int( Motor_global_vars.sampling_rate/fund_freq/2) # 取樣點數
                 command_485.set_computation_result(ser, online_device_indices[i] + 1, delay=0.1, m_wave_number=m_wave_number_fft)
@@ -435,13 +539,18 @@ def main():
                     schedule.run_pending()  # 執行所有排程的任務
                     time.sleep(0.1)  # 減少 CPU 使用率，確保任務按時執行
             except KeyboardInterrupt:
-                close_program(ser, status, chandle, " interrupted by user.")
+                close_program(ser, status, chandle, " interrupted by user.", Data_folder)
 
     except Exception as ex:
         print("An error occurred: ", ex)
 
     finally:
-        close_program(ser, status, chandle, "Program stopped by exception.")
+        try :
+            close_program(ser, status, chandle, "Program stopped by exception.")
+        except Exception as ex:
+            # print("An error occurred during program closure: ", ex)
+            input("按 Enter 鍵退出...")
+            sys.exit()
 
 # if __name__ == "__main__":
 #     main()

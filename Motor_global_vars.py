@@ -45,6 +45,9 @@ V_measure_mode=get_parameter_from_df(parameters,'V_measure_mode','Vadc_mode')
 fast_update_period=get_parameter_from_df(parameters,'FAST_period',60) # 1 min
 rul_update_period=get_parameter_from_df(parameters,'RUL_period',300) # 5 min
 transmit_test_flag=get_parameter_from_df(parameters,'Transmit_test_flag',0)
+collection_times=get_parameter_from_df(parameters,'collection_times',40)
+outlier_number=get_parameter_from_df(parameters,'outlier_number',10)
+
 Data_folder_path=parameters['Record File Path']
 Data_folder_path=Data_folder_path[0]
 

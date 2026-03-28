@@ -37,6 +37,7 @@ def data_update_RUL_parquet(ser, device_num, motor_cond, filename, unpack_rul_da
         motor_cond_out_list = get_motor_cond_list(motor_cond)
         # conditions: 'Speed(Rpm)', 'Torque(N)', 'Power(KW)', 'Efficiency(%)', 'Efficiency_alarm'
         acc_rms = np.sqrt(np.mean((np.array(raw_pico_data) - np.mean(np.array(raw_pico_data))** 2)))
+        print('torque=', motor_cond_out_list[1], 'Nm, power=', motor_cond_out_list[2], 'KW, speed=', motor_cond_out_list[0], 'RPM')
         data = {
             "Unix Time": [str(int(time.time()))],       # Unix 時間
             "Speed": [motor_cond_out_list[0]],          # 力矩 (Nm)
@@ -173,27 +174,45 @@ def data_update_RUL_essemble(ser, device_num, motor_cond, filename, unpack_rul_d
     return rul_data_is_save
 
 
-def get_fundmental_freq(signal_real, signal_imag, sampling_rate):
-    L=len(signal_real)
-    signal_complex = signal_real + 1j * signal_imag
-    signal_complex = signal_complex.flatten()
-    N = len(signal_complex)
-    fft_vals = np.fft.fft(signal_complex, n=N)
-    fft_vals_shifted = np.fft.fftshift(fft_vals)
-    freqs = np.fft.fftshift(np.fft.fftfreq(N, d=1 / sampling_rate))
-    # fft_result = np.abs(fft_vals_shifted) / N
-    fft_result_cplx = fft_vals_shifted / N
-    
-    fft_result=np.abs(fft_result_cplx)  # get the magnitude of fft result
-    
-    # find frequency index of characteristic frequencies
-    fund_freq_idx = np.argmax(fft_result)
-    minus1_freq_idx = L - fund_freq_idx
-    minus1_freq = freqs[minus1_freq_idx]
-    fund_freq = freqs[fund_freq_idx]
+def get_fundamental_freq(signal_real, signal_imag, sampling_rate, ignore_dc=True):
+    """
+    由 real/imag 組成複數訊號後做雙邊 FFT，回傳最大幅度所在的頻率 (Hz)。
+    參數:
+        signal_real : 1D array-like
+        signal_imag : 1D array-like
+        sampling_rate : 取樣率 (Hz)
+        ignore_dc : 是否忽略 DC(0 Hz) 峰值以避免被直流量誤判
+    回傳:
+        fund_freq : 最大幅度對應的頻率 (Hz，可能為負值)
+    """
+    # 1) 組複數、扁平化
+    x = (np.asarray(signal_real) + 1j * np.asarray(signal_imag)).flatten()
+    N = x.size
+    if N == 0:
+        return 0.0
 
-    
-    return fund_freq
+    # 2) FFT（做幅度平均）
+    X = np.fft.fft(x, n=N) / N
+
+    # 3) 產生雙邊頻率軸並對齊頻譜
+    #    d 是取樣間隔(秒/樣本)；sampling_rate 應該是 Hz
+    freqs = np.fft.fftshift(np.fft.fftfreq(N, d=1.0 / sampling_rate))
+    Xc = np.fft.fftshift(X)
+
+    # 4) 幅度
+    mag = np.abs(Xc)
+
+    # 5) 選擇性忽略 DC（避免 0 Hz 被當成最大）
+    if ignore_dc:
+        # 找到最靠近 0 Hz 的索引並設為 0
+        dc_idx = np.argmin(np.abs(freqs))
+        mag[dc_idx] = 0.0
+
+    # 6) 找最大幅度的索引與頻率（雙邊，所以可能是正或負）
+    fund_idx = np.argmax(mag)
+    fund_freq = freqs[fund_idx]
+
+    return float(fund_freq)
 
 # save the RUL data into the csv file
 def data_update_RUL_csv (ser, device_num, file_path, unpack_rul_data, retries=5,delay=1):
