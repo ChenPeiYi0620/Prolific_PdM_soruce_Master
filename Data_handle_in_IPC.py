@@ -232,7 +232,7 @@ def estimate_torque(v_a_raw, v_c_raw, i_alpha, i_beta, speed_v=1800, debug=False
 
     # Preprocess the voltage data, transform the data to alpha-beta frame
     v_alpha = v_a_raw
-    v_beta = (-v_c_raw + v_a_raw - v_c_raw) / np.sqrt(3)
+    v_beta = v_c_raw #(-v_c_raw + v_a_raw - v_c_raw) / np.sqrt(3)
 
     class EMF:
         def __init__(self):
@@ -311,7 +311,7 @@ def estimate_torque(v_a_raw, v_c_raw, i_alpha, i_beta, speed_v=1800, debug=False
         beta_compensated_values.append(beta_transformed)
 
     # Torque estimation
-    torque_v = 1.5 * 2 * ((np.array(alpha_compensated_values) * i_beta) - (np.array(beta_compensated_values) * i_alpha))
+    torque_v = 1.5 * Motor_global_vars.Motor_P/2 * ((np.array(alpha_compensated_values) * i_beta) - (np.array(beta_compensated_values) * i_alpha))
     # Power and efficiency estimation
     Power_M= np.mean(torque_v[-Motor_global_vars.data_length:]*we)
     Power_E = np.mean(3 / 2 * (v_alpha * i_alpha + v_beta * i_beta))

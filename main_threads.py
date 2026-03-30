@@ -7,17 +7,23 @@ import Data_handle
 import os
 import Motor_global_vars
 import numpy as np
-import threading
 import schedule
 import Data_handle_in_IPC
 from threading import Lock
 import matplotlib.pyplot as plt
-import rul_pico_functions as r_pico
-from picosdk.ps4000 import ps4000 as ps
 from rul_features.rul_data_read import read_rul_data
 import re,shutil,csv
 import math
 
+
+
+"""AQbox 主程式。
+
+主要職責：
+1. 與 AQbox 通訊，收集 FAST / RUL 資料。
+2. 使用 IPC 演算法估測 torque 與 motor condition。
+3. 儲存資料、更新監控圖並執行排程任務。
+"""
 
 
 # Debug flag if true the program will run debug mode, not collect data but only run the scheduling and plot demo functions
@@ -33,6 +39,8 @@ ccae_counter = {"count": 0, "times": 100}
 
 # FAST data collection method flag
 FAST_in_IPC = True
+# Motor condition source flag: True=IPC estimation, False=sensor packet
+MOTOR_COND_FROM_IPC = True
 # record the package error times
 total_err_count = 0
 
@@ -42,9 +50,8 @@ FAST_PERIOD = Motor_global_vars.fast_update_period  # Period for FAST data colle
 RUL_PERIOD = Motor_global_vars.rul_update_period  # Period for RUL data collection
 AQ_data_length = Motor_global_vars.data_length  # Signal length
 
-# peripheral device declaration
+# peripheral device declaration (Pico vibration monitoring removed)
 status, chandle, runblock_settings, chARange = None, None, None, None
-acc_alarm_count=0
 
 
 # Initialize lock for synchronization
@@ -60,12 +67,12 @@ def clear_terminal():
         print("終端已清除")
 
 def close_program(ser,status, chandle, stop_reason=" ", Data_folder=""):
+    """關閉程式與裝置，並在退出前執行電壓檔案校正流程。"""
     for current_device_number in range(8):
         print('closing device ', current_device_number+1)
         command_485.servo_control(current_device_number, ser, 0)
     if ser.is_open:
         ser.close()
-    r_pico.pico_close(status, chandle)
     print (" Program is stopped: ", stop_reason)
     print ("program stopped, calibrating voltages ...")
     list_voltage_thd(f"{Data_folder}/Update_data/RUL_data/RUL_{3}")
@@ -74,6 +81,7 @@ def close_program(ser,status, chandle, stop_reason=" ", Data_folder=""):
     sys.exit()
 
 def plot_sensory_data(fig,axs, v_alpha, v_beta, i_alpha, i_beta, flux_alpha, flux_beta, torque_v):
+    """FAST 監控圖：顯示電壓/電流/磁通/力矩。"""
     # 將所有數據轉換為 numpy 陣列
     v_alpha, v_beta = np.array(v_alpha), np.array(v_beta)
     i_alpha, i_beta = np.array(i_alpha), np.array(i_beta)
@@ -110,11 +118,19 @@ def plot_sensory_data(fig,axs, v_alpha, v_beta, i_alpha, i_beta, flux_alpha, flu
     fig.canvas.draw()
     plt.pause(0.1)  # 非阻塞顯示
 
-def plot_sensory_data_pico(fig,axs, v_alpha, v_beta, i_alpha, i_beta, acc_data=None):
+def plot_sensory_data_pico(fig,axs, v_alpha, v_beta, i_alpha, i_beta, torque_data=None, data_is_u16=True):
+    """RUL 監控圖：顯示電壓(V)、電流(A)、估測力矩(Nm)。"""
     # 將所有數據轉換為 numpy 陣列
     v_alpha, v_beta = np.array(v_alpha), np.array(v_beta)
     i_alpha, i_beta = np.array(i_alpha), np.array(i_beta)
-    acc_data = np.array(acc_data)
+    torque_data = np.array(torque_data) if torque_data is not None else None
+
+    # Monitoring plot uses SI units on Y-axis.
+    if data_is_u16:
+        v_alpha = Data_handle.u16_to_true_data(v_alpha, Motor_global_vars.Base_voltage)
+        v_beta = Data_handle.u16_to_true_data(v_beta, Motor_global_vars.Base_voltage)
+        i_alpha = Data_handle.u16_to_true_data(i_alpha, Motor_global_vars.Base_current)
+        i_beta = Data_handle.u16_to_true_data(i_beta, Motor_global_vars.Base_current)
 
     # 清除所有子圖的內容
     for ax in axs:
@@ -123,27 +139,80 @@ def plot_sensory_data_pico(fig,axs, v_alpha, v_beta, i_alpha, i_beta, acc_data=N
     # 子圖1：繪製 v_alpha 與 v_beta
     axs[0].plot(v_alpha, label="v_alpha")
     axs[0].plot(v_beta, label="v_beta")
-    axs[0].set_title("Voltage")
+    axs[0].set_title("Voltage (V)")
+    axs[0].set_ylabel("V")
     axs[0].legend()
 
     # 子圖2：繪製 i_alpha 與 i_beta
     axs[1].plot(i_alpha, label="i_alpha")
     axs[1].plot(i_beta, label="i_beta")
-    axs[1].set_title("Current")
+    axs[1].set_title("Current (A)")
+    axs[1].set_ylabel("A")
     axs[1].legend()
 
-    # 子圖3：繪製 flux_alpha 與 flux_beta
-    global chARange
-    pico_gain_str = [k for k, v in ps.PS4000_RANGE.items() if v == chARange]
-    axs[2].plot(acc_data, label=f"acceleration: {pico_gain_str}")
-    axs[2].set_title("Pico acc result ")
-    axs[2].legend()
+    # 子圖3：繪製估測 torque
+    if torque_data is None:
+        axs[2].text(0.5, 0.5, "Torque estimate unavailable", ha="center", va="center")
+    else:
+        axs[2].plot(torque_data, label="estimated_torque")
+        axs[2].legend()
+    axs[2].set_title("Estimated Torque (Nm)")
+    axs[2].set_ylabel("Nm")
 
     fig.canvas.draw()
     plt.pause(0.1)  # 非阻塞顯示
 
+
+def true_to_u16_data(true_data, pu_gain=1):
+    """將實際物理量轉回 MCU 使用的 Uint16 編碼範圍。"""
+    if pu_gain == 0:
+        return 32768.0
+    scaled = float(true_data) / float(pu_gain) * 32768.0 + 32768.0
+    return float(np.clip(scaled, 0.0, 65535.0))
+
+
+def estimate_torque_and_motor_cond_from_rul_data(dataRUL, base_motor_cond=None):
+    """由 RUL 原始封包估測 torque 與工況。
+
+    回傳:
+        torque_raw: 力矩時序估測
+        motor_cond: 可直接存檔/顯示的工況字典
+        ipc_cond_err: IPC 計算是否失敗
+        ipc_info: 給 terminal 顯示的 SI 資訊
+    """
+    motor_cond = dict(base_motor_cond) if isinstance(base_motor_cond, dict) else {}
+    try:
+        voltage_a_SI = Data_handle.u16_to_true_data(np.array(dataRUL['voltage_alpha']), Motor_global_vars.Base_voltage)
+        voltage_c_SI = Data_handle.u16_to_true_data(np.array(dataRUL['voltage_beta']), Motor_global_vars.Base_voltage)
+        current_alpha_SI = Data_handle.u16_to_true_data(np.array(dataRUL['current_alpha']), Motor_global_vars.Base_current)
+        current_beta_SI = Data_handle.u16_to_true_data(np.array(dataRUL['current_beta']), Motor_global_vars.Base_current)
+        torque_raw, _, _, _, _, power_sts = Data_handle_in_IPC.estimate_torque(
+            voltage_a_SI, voltage_c_SI, current_alpha_SI, current_beta_SI, debug=False
+        )
+        torque = float(np.mean(torque_raw[-Motor_global_vars.data_length:]))
+        # 以基頻估測轉速
+        _, fund_freq, _ = Data_handle_in_IPC.get_cn_sts_list(current_alpha_SI, current_beta_SI)
+        speed_rpm = float(max(0.0, fund_freq * 60 * 2 / Motor_global_vars.Motor_P))
+        power_kw_e = float(power_sts.get('Power_E')) / 1000
+        power_kw_m = float(torque * speed_rpm * math.pi / 30 / 1000)
+        ipc_info = {
+            'torque_nm': torque,
+            'speed_rpm': speed_rpm,
+            'power_kw(E)': power_kw_e,
+            'power_kw(M)': power_kw_m,
+            'efficiency_pct': power_kw_m / (power_kw_e + 1e-6) * 100 if power_kw_e > 1e-6 else 0.0,
+        }
+        if MOTOR_COND_FROM_IPC:
+            motor_cond['speed'] = true_to_u16_data(speed_rpm, Motor_global_vars.Base_Speed)
+            motor_cond['torque'] = true_to_u16_data(torque, Motor_global_vars.Base_Torque)
+            motor_cond['power'] = true_to_u16_data(power_kw_e, Motor_global_vars.Base_Power)
+        return torque_raw, motor_cond, False, ipc_info
+    except Exception:
+        return None, motor_cond, True, None
+
 # check the newest data number of the recorded RUL data (scv or parquet)
 def get_newest_data_number(Rul_folder_name):
+    """取得指定資料夾中最新檔案的流水號。"""
     files = [f for f in os.listdir(Rul_folder_name) if f.endswith((".csv", ".parquet"))]
     if not files:
         return 0
@@ -152,6 +221,7 @@ def get_newest_data_number(Rul_folder_name):
         0].isdigit() else 0
 
 def check_and_create_folders(Data_folder, online_device_indices, RUL_newest_numbers):
+    """建立必要資料夾並初始化每顆馬達的 RUL 檔案編號。"""
     if not os.path.exists(Data_folder):
         Data_folder = "."
 
@@ -169,6 +239,7 @@ def check_and_create_folders(Data_folder, online_device_indices, RUL_newest_numb
 
 # setup serial port
 def find_AQbox_port():
+    """自動尋找 AQbox 對應序列埠。"""
     ports = list_ports.comports()
     for port in ports:
         if "Prolific PL2303GC" in port.description or "USB Serial Port" in port.description:
@@ -176,6 +247,7 @@ def find_AQbox_port():
     DEBUG or sys.exit("Failed to open serial port")
 
 def AQbox_serial_set_up(COM):
+    """建立並設定序列埠參數。"""
     ser = serial.Serial()
     ser.port = COM
     ser.baudrate = 921600 # for NTU quick data collection
@@ -190,8 +262,51 @@ def AQbox_serial_set_up(COM):
     ser.dsrdtr = False
     return ser
 
+
+def update_rul_monitor_plot(fig, axs, data_rul):
+    """更新單顆馬達 RUL 監控圖（SI 單位）。"""
+    torque_raw, _, _, _ = estimate_torque_and_motor_cond_from_rul_data(data_rul)
+    plot_sensory_data_pico(
+        fig,
+        axs,
+        data_rul['voltage_alpha'],
+        data_rul['voltage_beta'],
+        data_rul['current_alpha'],
+        data_rul['current_beta'],
+        torque_raw,
+    )
+
+
+def setup_motor_before_collection(ser, device_idx, fig, axs):
+    """單顆馬達開機前處理：CT 校正、伺服啟動、監控預覽。"""
+    # 1) 取一次資料做 CT offset 校正
+    data_rul, _, _ = command_485.get_all_RUL_pack_bulk(ser, device_idx + 1, AQ_data_length * 4)
+    offset_alpha = (np.mean(np.array(data_rul['current_alpha'])) - 32767) / 32768
+    offset_beta = (np.mean(np.array(data_rul['current_beta'])) - 32767) / 32768
+    command_485.set_ct_offset(ser, device_idx + 1, 0.1, offset_alpha, offset_beta, 'CT')
+    update_rul_monitor_plot(fig, axs, data_rul)
+
+    # 2) 伺服開啟與 FAST 重置
+    command_485.servo_control(device_idx + 1, ser, 1)
+    command_485.reset_AQbox_FAST(ser, device_idx + 1)
+
+    # 3) 等待更新後再取一次資料
+    time.sleep(2)
+    print('preparing for the motor to be ready, please wait...')
+    data_rul, _, _ = command_485.get_all_RUL_pack_bulk(ser, device_idx + 1, AQ_data_length * 4)
+    update_rul_monitor_plot(fig, axs, data_rul)
+
+    # 4) 用電流基頻設定 IPC 計算視窗
+    current_alpha_out = Data_handle.u16_to_true_data(np.array(data_rul['current_alpha']), Motor_global_vars.Base_current)
+    current_beta_out = Data_handle.u16_to_true_data(np.array(data_rul['current_beta']), Motor_global_vars.Base_current)
+    fund_freq = max(1, Data_handle.get_fundamental_freq(current_alpha_out, current_beta_out, Motor_global_vars.sampling_rate))
+    print(f'fundamental frequency: {fund_freq}, rpm={fund_freq*60/2/Motor_global_vars.Motor_P}')
+    m_wave_number_fft = int(Motor_global_vars.sampling_rate / fund_freq / 2)
+    command_485.set_computation_result(ser, device_idx + 1, delay=0.1, m_wave_number=m_wave_number_fft)
+    time.sleep(1)
+
 def collect_fast_data(ser, online_device_indices, Data_folder, AQ_data_length, figs,  axs_list):
-    """Function to collect FAST data while ensuring mutual exclusion."""
+    """FAST 週期任務：收集、估測、儲存 FAST 資料。"""
     with lock:
 
         if DEBUG:
@@ -200,8 +315,11 @@ def collect_fast_data(ser, online_device_indices, Data_folder, AQ_data_length, f
         for k, current_device_number in enumerate(online_device_indices):
             retries = 0
             while retries < MAX_RETRIES:
-                # get motor operating condition
-                motor_cond, cond_err_sts = command_485.get_cond_pack(ser, current_device_number + 1, 3)
+                if MOTOR_COND_FROM_IPC and FAST_in_IPC:
+                    motor_cond, cond_err_sts = {}, False
+                else:
+                    # get motor operating condition from sensor packet
+                    motor_cond, cond_err_sts = command_485.get_cond_pack(ser, current_device_number + 1, 3)
                 # get motor fault status
                 motor_cn_sts, cn_sts_err_sts = command_485.get_cn_pack(ser, current_device_number + 1, 3)
                 if cond_err_sts or cn_sts_err_sts:
@@ -210,6 +328,17 @@ def collect_fast_data(ser, online_device_indices, Data_folder, AQ_data_length, f
                 if not FAST_in_IPC:
                     # get FAST data (from AQbox)
                     unpack_fast_data, err_record, err_sts = command_485.get_all_FAST_pack(ser, current_device_number + 1, AQ_data_length)
+                    torque_raw = None
+                    v_alpha = v_beta = current_alpha_SI = current_beta_SI = flux_alpha_IPC = flux_beta_IPC = None
+                    if MOTOR_COND_FROM_IPC:
+                        # Build motor condition from IPC estimate even in FAST packet mode.
+                        dataRUL_cond, _, cond_data_err = command_485.get_all_RUL_pack(ser, current_device_number + 1, AQ_data_length * 2)
+                        if cond_data_err:
+                            err_sts = True
+                        else:
+                            _, motor_cond, ipc_cond_err, _ = estimate_torque_and_motor_cond_from_rul_data(dataRUL_cond, motor_cond)
+                            if ipc_cond_err:
+                                err_sts = True
 
                 else :
                     # start_time = time.time()
@@ -227,11 +356,14 @@ def collect_fast_data(ser, online_device_indices, Data_folder, AQ_data_length, f
 
                     torque_raw, flux_alpha_IPC,flux_beta_IPC, v_alpha, v_beta, power_sts = Data_handle_in_IPC. estimate_torque(voltage_a_SI, voltage_c_SI, current_alpha_SI, current_beta_SI, debug=False)
                     # get the average torque
-                    torque =np.mean(torque_raw[-Motor_global_vars.data_length:])
                     motor_cn_sts, fund_freq, minus1_freq=Data_handle_in_IPC.get_cn_sts_list(current_alpha_SI,current_beta_SI)
-
-                    motor_cond['torque']=torque*32768+32767
-                    motor_cond['power']=power_sts['Power_E']/1000*32768+32767
+                    if MOTOR_COND_FROM_IPC:
+                        speed_rpm = float(max(0.0, fund_freq * 60 / 2 / Motor_global_vars.Motor_P))
+                        torque = float(np.mean(torque_raw[-Motor_global_vars.data_length:]))
+                        power_kw = float(power_sts['Power_E'] / 1000)
+                        motor_cond['speed'] = true_to_u16_data(speed_rpm, Motor_global_vars.Base_Speed)
+                        motor_cond['torque'] = true_to_u16_data(torque, Motor_global_vars.Base_Torque)
+                        motor_cond['power'] = true_to_u16_data(power_kw, Motor_global_vars.Base_Power)
 
                     global total_err_count
                     print(f'IPC collection fail times: {total_err_count}')
@@ -257,21 +389,20 @@ def collect_fast_data(ser, online_device_indices, Data_folder, AQ_data_length, f
                     # Update the plot with new data
                     # simple_plot(np.array(dataRUL['current_alpha']), np.array(dataRUL['current_beta']), axs)
                     # multi_plot(dataRUL['voltage_alpha'], dataRUL['voltage_beta'], dataRUL['current_alpha'], dataRUL['current_beta'], axs)
-                    plot_sensory_data(figs[k], axs_list[k], v_alpha, v_beta, current_alpha_SI, current_beta_SI
-                                      , flux_alpha_IPC, flux_beta_IPC, torque_raw)
+                    if FAST_in_IPC and torque_raw is not None:
+                        plot_sensory_data(figs[k], axs_list[k], v_alpha, v_beta, current_alpha_SI, current_beta_SI
+                                          , flux_alpha_IPC, flux_beta_IPC, torque_raw)
 
                     break
                 else:
                     retries += 1
 
 
-def collect_rul_data(ser, online_device_indices, RUL_newest_numbers, Data_folder, AQ_data_length, figs, axs_list):
-    
-
-    """Function to collect RUL data while ensuring mutual exclusion."""
+def collect_rul_data(ser, online_device_indices, RUL_newest_numbers, RUL_collected_counts, Data_folder, AQ_data_length, figs, axs_list):
+    """RUL 週期任務：收集、估測、儲存 RUL 資料並更新監控畫面。"""
     with lock:
-        global status, chandle, runblock_settings, chARange
-        
+        global status, chandle
+
         if CCAE_test_mode:
             ccae_counter["count"] += 1
         if ccae_counter["count"] >= ccae_counter["times"]:
@@ -285,42 +416,54 @@ def collect_rul_data(ser, online_device_indices, RUL_newest_numbers, Data_folder
         for j in range(len(online_device_indices)):
             current_device_number = online_device_indices[j]
             retries = 0
-            # run the pico block
-            r_pico.runblock_pico_A(status, chandle, runblock_settings)
 
-            # get motor operating condition
-            motor_cond, cond_err_sts = command_485.get_cond_pack(ser, current_device_number + 1, 3)
+            if MOTOR_COND_FROM_IPC:
+                motor_cond, cond_err_sts = {}, False
+            else:
+                # get motor operating condition from sensor packet
+                motor_cond, cond_err_sts = command_485.get_cond_pack(ser, current_device_number + 1, 3)
 
             while retries < MAX_RETRIES:
-                timemow=time.time()
+                time_now = time.time()
                 # dataRUL, err_record, err_sts = command_485.get_all_RUL_pack(ser, current_device_number + 1, AQ_data_length * 4)
                 dataRUL, err_record, err_sts = command_485.get_all_RUL_pack_bulk(ser, current_device_number + 1, AQ_data_length * 4)
-                print(f'collect time:{time.time()-timemow}')
-                # ge pico acc data and its rms
-                chARange, pico_data = r_pico.get_pico_values(status, chandle, runblock_settings, chARange)
+                print(f'collect time:{time.time()-time_now}')
+                torque_raw, motor_cond, ipc_cond_err, ipc_info = estimate_torque_and_motor_cond_from_rul_data(dataRUL, motor_cond)
+                if MOTOR_COND_FROM_IPC and ipc_cond_err:
+                    retries += 1
+                    continue
 
                 if not err_sts:
                     RUL_newest_numbers[j]=RUL_newest_numbers[j]+1
+                    RUL_collected_counts[j] = RUL_collected_counts[j] + 1
                     Rul_folder_name = f"{Data_folder}/Update_data/RUL_data/RUL_{current_device_number + 1}"
                     CSV_file_name = f"{Rul_folder_name}/RUL_Data_{current_device_number + 1}_{RUL_newest_numbers[j]}.csv"
                    
                     # Data_handle.data_update_RUL_csv(ser, current_device_number + 1, CSV_file_name, dataRUL, retries=5, delay=1)
-                    Data_handle.data_update_RUL_parquet(ser, current_device_number + 1, motor_cond,CSV_file_name, dataRUL, pico_data
+                    Data_handle.data_update_RUL_parquet(ser, current_device_number + 1, motor_cond,CSV_file_name, dataRUL
                                                         , retries=5, delay=1)  # save by parquet file
 
 
                     
                     # essemble_file_name = f"{Rul_folder_name}/RUL_Data_{current_device_number + 1}.h5"
-                    # Data_handle.data_update_RUL_essemble(ser, current_device_number + 1, motor_cond,essemble_file_name, dataRUL, pico_data
+                    # Data_handle.data_update_RUL_essemble(ser, current_device_number + 1, motor_cond,essemble_file_name, dataRUL
                     #                                     , retries=5, delay=1)  # save by essemble h5 file
                     
                     # print the collection  message
                     print(f'Device' + str(current_device_number+1) + ' RUL data ' + str(
                         RUL_newest_numbers[j]) + ' is saved, time:', time.strftime(" %H:%M:%S", time.localtime()))
+                    if MOTOR_COND_FROM_IPC and ipc_info is not None:
+                        print(
+                            f"[IPC] torque={ipc_info['torque_nm']:.3f} Nm, "
+                            f"power(E)={ipc_info['power_kw(E)']:.3f} KW, "
+                            f"power(M)={ipc_info['power_kw(M)']:.3f} KW, "
+                            f"speed={ipc_info['speed_rpm']:.3f} RPM, "
+                            f"eff={ipc_info['efficiency_pct']:.2f}%"
+                        )
                     plot_sensory_data_pico(figs[j], axs_list[j], dataRUL['voltage_alpha'], dataRUL['voltage_beta'],
-                                           dataRUL['current_alpha'], dataRUL['current_beta'], pico_data)
+                                           dataRUL['current_alpha'], dataRUL['current_beta'], torque_raw)
 
-                    if RUL_newest_numbers[j]>=Motor_global_vars.collection_times:
+                    if RUL_collected_counts[j] >= Motor_global_vars.collection_times:
                         close_program(ser, status, chandle, f"reach the collection times {Motor_global_vars.collection_times}", Data_folder)
                     break
                 else:
@@ -329,23 +472,6 @@ def collect_rul_data(ser, online_device_indices, RUL_newest_numbers, Data_folder
         # record the error times
         global total_err_count
         total_err_count = total_err_count + sum(err_record)
-
-
-# scheduling : motor acceleration check
-def motor_acc_check(ser,online_device_indices):
-        global status, chandle, runblock_settings,chARange
-        with lock:
-            for i in range(len(online_device_indices)):
-                # print(f'acc status check for device {online_device_indices[i]+1}, time : {time.strftime("%H:%M:%S", time.localtime())}')
-                # run the pico block to check acc level
-                r_pico.runblock_pico_A(status, chandle, runblock_settings)
-                # ge pico acc data and its rms
-                chARange, pico_data = r_pico.get_pico_values(status, chandle, runblock_settings, chARange)
-                acc_rms = np.sqrt(np.mean((pico_data - np.mean(pico_data)) ** 2))
-                print(f' Device {online_device_indices[i]+1} vibration rms : {acc_rms:.5f}, time : {time.strftime("%H:%M:%S", time.localtime())}')
-                if acc_rms>Motor_global_vars.acc_threshold:
-                    global acc_alarm_count #stop collection if vibration alarm trigger too many times
-                    acc_alarm_count=acc_alarm_count+1 if acc_alarm_count<3 else close_program(ser, status, chandle, f'Vibration alarm{acc_rms:.5f}, trigger times: {acc_alarm_count}')
 
 # calibrating collected voltages file by file
 def list_voltage_thd(Normal_subfolders):
@@ -422,20 +548,12 @@ def list_voltage_thd(Normal_subfolders):
 
 
 def main():
+    """主入口：初始化設備、執行前處理並啟動排程。"""
     print('AQbox data collection program start, version 1.0')
 
     # find and setups the AQbox port
     com = find_AQbox_port()
     ser = AQbox_serial_set_up(com)
-
-    # setup pico device
-    try:
-        global status, chandle, runblock_settings, chARange
-        status, chandle, runblock_settings, chARange = r_pico.pico_setup_acc(AQ_data_length * 4)
-    except Exception as ex:
-        print("Failed to setup Pico device: ", ex)
-        input("按 Enter 鍵退出...")
-        sys.exit()
 
     # Call plt.ion() to enable interactive mode
     plt.ion()
@@ -459,6 +577,7 @@ def main():
             online_devices = [index for index, value in enumerate(device_status) if value != 0]
             online_device_indices = [index for index, value in enumerate(device_status) if value != 0]
             RUL_newest_numbers = [1] * len(online_device_indices)
+            RUL_collected_counts = [0] * len(online_device_indices)
             if not online_devices:
                 if DEBUG:
                     print("No online devices found, entering debug mode...")
@@ -483,53 +602,19 @@ def main():
 
             # calibration CT oset and servo on the motors
             for i in range(len(online_device_indices)):
-                
-                # command_485.get_all_RUL_pack_bulk(ser, online_device_indices[i]+1, AQ_data_length*4)
-                
-                # calibrate the CT offset
-                dataRUL, _, _ = command_485.get_all_RUL_pack_bulk(ser, online_device_indices[i]  + 1,AQ_data_length*4 )
-                offset_alpha= (np.mean(np.array(dataRUL['current_alpha']))-32767)/32768
-                offset_beta = (np.mean(np.array(dataRUL['current_beta']))-32767)/32768
-                command_485.set_ct_offset(ser, online_device_indices[i] + 1, 0.1, offset_alpha, offset_beta, 'CT')
-
-                # plot the sensory data after calibration
-                plot_sensory_data_pico(figs[i], axs_list[i], dataRUL['voltage_alpha'], dataRUL['voltage_beta'],
-                                       dataRUL['current_alpha'], dataRUL['current_beta'])
-                # servo on and wait for the motor to be ready
-                command_485.servo_control(online_device_indices[i] + 1, ser, 1)
-                command_485.reset_AQbox_FAST(ser, online_device_indices[i] + 1)
-
-                
-                # wait ASRAM update
-                time.sleep(2)
-                print('preparing for the motor to be ready, please wait...')
-                dataRUL, _, _ = command_485.get_all_RUL_pack_bulk(ser, online_device_indices[i] + 1, AQ_data_length*4)
-                plot_sensory_data_pico(figs[i], axs_list[i], dataRUL['voltage_alpha'], dataRUL['voltage_beta'],
-                                       dataRUL['current_alpha'], dataRUL['current_beta'])
-                current_alpha_out = Data_handle.u16_to_true_data(np.array(dataRUL['current_alpha']), Motor_global_vars.Base_current)
-                current_beta_out = Data_handle.u16_to_true_data(np.array(dataRUL['current_beta']), Motor_global_vars.Base_current)
-                fund_freq = max(1, Data_handle.get_fundamental_freq(current_alpha_out, current_beta_out, Motor_global_vars.sampling_rate))
-                print(f'fundamental frequency: {fund_freq}, rpm={fund_freq*60/2/Motor_global_vars.Motor_P}')
-                m_wave_number_fft = int( Motor_global_vars.sampling_rate/fund_freq/2) # 取樣點數
-                command_485.set_computation_result(ser, online_device_indices[i] + 1, delay=0.1, m_wave_number=m_wave_number_fft)
-
-
-                time.sleep(1)
+                setup_motor_before_collection(ser, online_device_indices[i], figs[i], axs_list[i])
                 
             print("All motors are ready, start data collection...")
             
             # run the first collection
             timenow = time.time()
-            collect_rul_data(ser, online_device_indices, RUL_newest_numbers, Data_folder, AQ_data_length, figs, axs_list)
+            collect_rul_data(ser, online_device_indices, RUL_newest_numbers, RUL_collected_counts, Data_folder, AQ_data_length, figs, axs_list)
             
             print('rule collection run time: ', (time.time() - timenow))
             
             # 使用 schedule 定時執行
-            schedule.every(Motor_global_vars.rul_update_period).seconds.do(collect_rul_data, ser, online_device_indices, RUL_newest_numbers,
+            schedule.every(Motor_global_vars.rul_update_period).seconds.do(collect_rul_data, ser, online_device_indices, RUL_newest_numbers, RUL_collected_counts,
                                                   Data_folder, AQ_data_length, figs, axs_list)
-
-            # check the motor acceleration value every 5 seconds
-            schedule.every(5).seconds.do(motor_acc_check, ser, online_device_indices)
 
             # clear the terminal every hour
             schedule.every().hour.do(clear_terminal)
