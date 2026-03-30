@@ -2,16 +2,16 @@ import sys
 import time
 import serial
 from serial.tools import list_ports
-import command_485
-import Data_handle
+from modules import command_485
+from modules import Data_handle
 import os
-import Motor_global_vars
+from modules import Motor_global_vars
 import numpy as np
 import schedule
-import Data_handle_in_IPC
+from modules import Data_handle_in_IPC
 from threading import Lock
 import matplotlib.pyplot as plt
-from rul_features.rul_data_read import read_rul_data
+from modules.rul_features.rul_data_read import read_rul_data
 import re,shutil,csv
 import math
 
@@ -25,6 +25,18 @@ import math
 3. 儲存資料、更新監控圖並執行排程任務。
 """
 
+"""函式索引（依流程）
+1. 基礎工具: clear_terminal, close_program, true_to_u16_data
+2. 估測與繪圖: estimate_torque_and_motor_cond_from_rul_data, plot_sensory_data, plot_sensory_data_pico
+3. 初始化流程: find_AQbox_port, AQbox_serial_set_up, get_online_device_indices,
+   build_monitor_figures, check_and_create_folders, setup_motor_before_collection
+4. 週期任務: collect_fast_data, collect_rul_data
+5. 排程流程: schedule_collection_jobs, run_scheduler_loop
+6. 主流程: main
+"""
+
+
+# ==================== 全域設定區 ====================
 
 # Debug flag if true the program will run debug mode, not collect data but only run the scheduling and plot demo functions
 # no device connection recquired in debug mode, and the plot will show test data
@@ -49,6 +61,8 @@ MAX_RETRIES = Motor_global_vars.max_tries  # Max retry times in each collection 
 FAST_PERIOD = Motor_global_vars.fast_update_period  # Period for FAST data collection
 RUL_PERIOD = Motor_global_vars.rul_update_period  # Period for RUL data collection
 AQ_data_length = Motor_global_vars.data_length  # Signal length
+DEVICE_COUNT = 8
+MAIN_LOOP_SLEEP_SEC = 0.1
 
 # peripheral device declaration (Pico vibration monitoring removed)
 status, chandle, runblock_settings, chARange = None, None, None, None
@@ -60,6 +74,9 @@ lock = Lock()
 # simple plot function
 plt.ion()  # 開啟互動模式
 
+
+# ==================== 通用工具區 ====================
+
 def clear_terminal():
     """清除終端畫面，確保執行時只有一個執行緒進入"""
     with lock:  # 確保只有一個執行緒在執行此操作
@@ -68,7 +85,7 @@ def clear_terminal():
 
 def close_program(ser,status, chandle, stop_reason=" ", Data_folder=""):
     """關閉程式與裝置，並在退出前執行電壓檔案校正流程。"""
-    for current_device_number in range(8):
+    for current_device_number in range(DEVICE_COUNT):
         print('closing device ', current_device_number+1)
         command_485.servo_control(current_device_number, ser, 0)
     if ser.is_open:
@@ -117,6 +134,9 @@ def plot_sensory_data(fig,axs, v_alpha, v_beta, i_alpha, i_beta, flux_alpha, flu
 
     fig.canvas.draw()
     plt.pause(0.1)  # 非阻塞顯示
+
+
+# ==================== 估測與監控圖區 ====================
 
 def plot_sensory_data_pico(fig,axs, v_alpha, v_beta, i_alpha, i_beta, torque_data=None, data_is_u16=True):
     """RUL 監控圖：顯示電壓(V)、電流(A)、估測力矩(Nm)。"""
@@ -300,10 +320,86 @@ def setup_motor_before_collection(ser, device_idx, fig, axs):
     current_alpha_out = Data_handle.u16_to_true_data(np.array(data_rul['current_alpha']), Motor_global_vars.Base_current)
     current_beta_out = Data_handle.u16_to_true_data(np.array(data_rul['current_beta']), Motor_global_vars.Base_current)
     fund_freq = max(1, Data_handle.get_fundamental_freq(current_alpha_out, current_beta_out, Motor_global_vars.sampling_rate))
-    print(f'fundamental frequency: {fund_freq}, rpm={fund_freq*60/2/Motor_global_vars.Motor_P}')
+    print(f'fundamental frequency: {fund_freq}, rpm={fund_freq*60*2/Motor_global_vars.Motor_P}')
     m_wave_number_fft = int(Motor_global_vars.sampling_rate / fund_freq / 2)
     command_485.set_computation_result(ser, device_idx + 1, delay=0.1, m_wave_number=m_wave_number_fft)
     time.sleep(1)
+
+
+def get_online_device_indices(ser):
+    """取得目前在線馬達索引清單。"""
+    device_status = command_485.check_device_number(ser, 0.1, Motor_global_vars.transmit_test_flag)
+    return [index for index, value in enumerate(device_status) if value != 0]
+
+
+def build_monitor_figures(device_indices):
+    """依據在線馬達數建立監控視窗。"""
+    figs, axs_list = [], []
+    for device_idx in device_indices:
+        fig, axs = plt.subplots(3, 1, sharex=True, figsize=(6, 8))
+        fig.suptitle(f"Sensor {device_idx + 1} Data")
+        figs.append(fig)
+        axs_list.append(axs)
+    return figs, axs_list
+
+
+def schedule_collection_jobs(ser, online_device_indices, rul_newest_numbers, rul_collected_counts, data_folder, figs, axs_list):
+    """註冊定時任務。"""
+    schedule.every(Motor_global_vars.rul_update_period).seconds.do(
+        collect_rul_data,
+        ser,
+        online_device_indices,
+        rul_newest_numbers,
+        rul_collected_counts,
+        data_folder,
+        AQ_data_length,
+        figs,
+        axs_list,
+    )
+    schedule.every().hour.do(clear_terminal)
+
+
+def run_scheduler_loop(ser, data_folder):
+    """執行排程主迴圈。"""
+    try:
+        while True:
+            schedule.run_pending()
+            time.sleep(MAIN_LOOP_SLEEP_SEC)
+    except KeyboardInterrupt:
+        close_program(ser, status, chandle, " interrupted by user.", data_folder)
+
+
+def prepare_runtime_context(ser):
+    """建立本次執行所需的上下文（在線裝置、圖窗、檔案編號等）。"""
+    online_device_indices = get_online_device_indices(ser)
+    rul_newest_numbers = [1] * len(online_device_indices)
+    rul_collected_counts = [0] * len(online_device_indices)
+
+    if not online_device_indices:
+        if DEBUG:
+            print("No online devices found, entering debug mode...")
+        else:
+            print("No online devices found. Closing serial port.")
+            input("按 Enter 鍵退出...")
+            sys.exit()
+
+    figs, axs_list = build_monitor_figures(online_device_indices)
+    data_folder, rul_newest_numbers = check_and_create_folders(
+        Motor_global_vars.Data_folder_path,
+        online_device_indices,
+        rul_newest_numbers,
+    )
+
+    return online_device_indices, rul_newest_numbers, rul_collected_counts, figs, axs_list, data_folder
+
+
+def prepare_online_motors(ser, online_device_indices, figs, axs_list):
+    """逐台執行開機前校正與預熱。"""
+    for i in range(len(online_device_indices)):
+        setup_motor_before_collection(ser, online_device_indices[i], figs[i], axs_list[i])
+
+
+# ==================== 週期任務區 ====================
 
 def collect_fast_data(ser, online_device_indices, Data_folder, AQ_data_length, figs,  axs_list):
     """FAST 週期任務：收集、估測、儲存 FAST 資料。"""
@@ -547,6 +643,8 @@ def list_voltage_thd(Normal_subfolders):
     return voltage_thd_list
 
 
+# ==================== 主流程區 ====================
+
 def main():
     """主入口：初始化設備、執行前處理並啟動排程。"""
     print('AQbox data collection program start, version 1.0')
@@ -571,38 +669,17 @@ def main():
 
     try:
         if DEBUG or ser.is_open:
+            (
+                online_device_indices,
+                RUL_newest_numbers,
+                RUL_collected_counts,
+                figs,
+                axs_list,
+                Data_folder,
+            ) = prepare_runtime_context(ser)
 
-            # check the device status
-            device_status = command_485.check_device_number(ser, 0.1, Motor_global_vars.transmit_test_flag)
-            online_devices = [index for index, value in enumerate(device_status) if value != 0]
-            online_device_indices = [index for index, value in enumerate(device_status) if value != 0]
-            RUL_newest_numbers = [1] * len(online_device_indices)
-            RUL_collected_counts = [0] * len(online_device_indices)
-            if not online_devices:
-                if DEBUG:
-                    print("No online devices found, entering debug mode...")
-                else:
-                    print("No online devices found. Closing serial port.")
-                    input("按 Enter 鍵退出...")
-                    sys.exit()
-
-            # set up figures
-            n = len(online_devices)
-            figs, axs_list = [], []
-            for i in range(len(online_devices)):
-                fig, axs = plt.subplots(3, 1, sharex=True, figsize=(6, 8))
-                fig.suptitle(f"Sensor {online_devices[i] + 1} Data")
-                figs.append(fig)
-                axs_list.append(axs)
-
-            # setup the data folder
-            Data_folder, RUL_newest_numbers = check_and_create_folders(Motor_global_vars.Data_folder_path, online_device_indices, RUL_newest_numbers)
-
-            # setup the plot
-
-            # calibration CT oset and servo on the motors
-            for i in range(len(online_device_indices)):
-                setup_motor_before_collection(ser, online_device_indices[i], figs[i], axs_list[i])
+            # calibration CT offset and servo on the motors
+            prepare_online_motors(ser, online_device_indices, figs, axs_list)
                 
             print("All motors are ready, start data collection...")
             
@@ -611,20 +688,19 @@ def main():
             collect_rul_data(ser, online_device_indices, RUL_newest_numbers, RUL_collected_counts, Data_folder, AQ_data_length, figs, axs_list)
             
             print('rule collection run time: ', (time.time() - timenow))
-            
+
             # 使用 schedule 定時執行
-            schedule.every(Motor_global_vars.rul_update_period).seconds.do(collect_rul_data, ser, online_device_indices, RUL_newest_numbers, RUL_collected_counts,
-                                                  Data_folder, AQ_data_length, figs, axs_list)
+            schedule_collection_jobs(
+                ser,
+                online_device_indices,
+                RUL_newest_numbers,
+                RUL_collected_counts,
+                Data_folder,
+                figs,
+                axs_list,
+            )
 
-            # clear the terminal every hour
-            schedule.every().hour.do(clear_terminal)
-
-            try:
-                while True:
-                    schedule.run_pending()  # 執行所有排程的任務
-                    time.sleep(0.1)  # 減少 CPU 使用率，確保任務按時執行
-            except KeyboardInterrupt:
-                close_program(ser, status, chandle, " interrupted by user.", Data_folder)
+            run_scheduler_loop(ser, Data_folder)
 
     except Exception as ex:
         print("An error occurred: ", ex)
