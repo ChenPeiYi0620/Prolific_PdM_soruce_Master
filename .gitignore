@@ -1,8 +1,5 @@
-# 忽略所有檔案
-*
+# 忽略虛擬環境資料夾
+.venv/
 
-# 但例外 .gitignore 本身
-!.gitignore
-
-# 例外 .py 檔案（追蹤所有 .py）
-!*.py
+# 忽略 JetBrains / PyCharm 設定資料夾
+.idea/
