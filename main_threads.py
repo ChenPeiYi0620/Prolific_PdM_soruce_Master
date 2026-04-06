@@ -53,6 +53,8 @@ ccae_counter = {"count": 0, "times": 100}
 FAST_in_IPC = True
 # Motor condition source flag: True=IPC estimation, False=sensor packet
 MOTOR_COND_FROM_IPC = True
+# RUL save format: "parquet" or "csv"
+RUL_DATA_FORMAT = "csv"
 # record the package error times
 total_err_count = 0
 
@@ -300,7 +302,7 @@ def update_rul_monitor_plot(fig, axs, data_rul):
 def setup_motor_before_collection(ser, device_idx, fig, axs):
     """單顆馬達開機前處理：CT 校正、伺服啟動、監控預覽。"""
     # 1) 取一次資料做 CT offset 校正
-    data_rul, _, _ = command_485.get_all_RUL_pack_bulk(ser, device_idx + 1, AQ_data_length * 4)
+    data_rul, _, _ = command_485.get_all_RUL_pack_bulk(ser, device_idx + 1, AQ_data_length )
     offset_alpha = (np.mean(np.array(data_rul['current_alpha'])) - 32767) / 32768
     offset_beta = (np.mean(np.array(data_rul['current_beta'])) - 32767) / 32768
     command_485.set_ct_offset(ser, device_idx + 1, 0.1, offset_alpha, offset_beta, 'CT')
@@ -313,7 +315,7 @@ def setup_motor_before_collection(ser, device_idx, fig, axs):
     # 3) 等待更新後再取一次資料
     time.sleep(2)
     print('preparing for the motor to be ready, please wait...')
-    data_rul, _, _ = command_485.get_all_RUL_pack_bulk(ser, device_idx + 1, AQ_data_length * 4)
+    data_rul, _, _ = command_485.get_all_RUL_pack_bulk(ser, device_idx + 1, AQ_data_length )
     update_rul_monitor_plot(fig, axs, data_rul)
 
     # 4) 用電流基頻設定 IPC 計算視窗
@@ -521,8 +523,8 @@ def collect_rul_data(ser, online_device_indices, RUL_newest_numbers, RUL_collect
 
             while retries < MAX_RETRIES:
                 time_now = time.time()
-                # dataRUL, err_record, err_sts = command_485.get_all_RUL_pack(ser, current_device_number + 1, AQ_data_length * 4)
-                dataRUL, err_record, err_sts = command_485.get_all_RUL_pack_bulk(ser, current_device_number + 1, AQ_data_length * 4)
+                # dataRUL, err_record, err_sts = command_485.get_all_RUL_pack(ser, current_device_number + 1, AQ_data_length )
+                dataRUL, err_record, err_sts = command_485.get_all_RUL_pack_bulk(ser, current_device_number + 1, AQ_data_length )
                 print(f'collect time:{time.time()-time_now}')
                 torque_raw, motor_cond, ipc_cond_err, ipc_info = estimate_torque_and_motor_cond_from_rul_data(dataRUL, motor_cond)
                 if MOTOR_COND_FROM_IPC and ipc_cond_err:
@@ -536,8 +538,17 @@ def collect_rul_data(ser, online_device_indices, RUL_newest_numbers, RUL_collect
                     CSV_file_name = f"{Rul_folder_name}/RUL_Data_{current_device_number + 1}_{RUL_newest_numbers[j]}.csv"
                    
                     # Data_handle.data_update_RUL_csv(ser, current_device_number + 1, CSV_file_name, dataRUL, retries=5, delay=1)
-                    Data_handle.data_update_RUL_parquet(ser, current_device_number + 1, motor_cond,CSV_file_name, dataRUL
-                                                        , retries=5, delay=1)  # save by parquet file
+                    Data_handle.data_update_RUL_parquet(
+                        ser,
+                        current_device_number + 1,
+                        motor_cond,
+                        CSV_file_name,
+                        dataRUL,
+                        retries=5,
+                        delay=1,
+                        dataformat=RUL_DATA_FORMAT,
+                        ipc_info=ipc_info,
+                    )
 
 
                     

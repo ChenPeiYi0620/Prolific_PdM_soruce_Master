@@ -63,8 +63,8 @@ outlier_number=get_parameter_from_df(parameters,'outlier_number',10)
 Data_folder_path=parameters['Record File Path']
 Data_folder_path=Data_folder_path[0]
 
-# sampling rate
-sampling_rate=20000
+# sampling rate *** 重要:此採樣率為IPC計算使用，實際採樣率設定在MCU裡面 ***
+sampling_rate=10000
 
 # vibration alarm threshold (g)
 acc_threshold=0.5

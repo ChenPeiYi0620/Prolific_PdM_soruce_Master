@@ -1,2 +1,2 @@
 ﻿Motor_Rs(Ohm),Motor_LS(H),Motor_P,Base_Speed(Rpm),Base_Torque(N),Base_Power(W),Base_Current(A),Base_Voltage(V),Base_Flux(Wb),cn_range_scale,data_length,Max_tries,Update_period,RUL_update_times,V_measure_mode,Record File Path,FAST_period,RUL_period,Transmit_test_flag,collection_times,outlier_number
-12,0.00906,8,3000,1,100,3.3942,300,0.05,0.05,2500,3,3,2,Vpwm_mode,test_folder,5,5,0,2,0
+12,0.00906,8,3000,1,100,3.3942,300,0.05,0.05,5000,3,3,2,Vpwm_mode,test_folder,5,5,0,2,0

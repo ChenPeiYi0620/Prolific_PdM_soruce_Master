@@ -13,8 +13,58 @@ import json
 def array_to_json(arr):
     return json.dumps(arr.tolist())
 
-# save the RUL data into the parquet file with pandas dataframe
-def data_update_RUL_parquet(ser, device_num, motor_cond, filename, unpack_rul_data, retries=5, delay=1):
+
+def _build_rul_csv_column_df(unix_time, motor_cond_out_list, voltage_alpha_out, voltage_beta_out,
+                             current_alpha_out, current_beta_out, error_record):
+    """Build column-oriented RUL dataframe for direct Excel visualization."""
+    v_alpha = np.asarray(voltage_alpha_out).flatten()
+    v_beta = np.asarray(voltage_beta_out).flatten()
+    i_alpha = np.asarray(current_alpha_out).flatten()
+    i_beta = np.asarray(current_beta_out).flatten()
+    err = np.asarray(error_record).flatten()
+
+    sample_count = max(len(v_alpha), len(v_beta), len(i_alpha), len(i_beta), len(err))
+
+    def _pad(arr):
+        arr = np.asarray(arr, dtype=float)
+        if len(arr) < sample_count:
+            arr = np.pad(arr, (0, sample_count - len(arr)), constant_values=np.nan)
+        return arr
+
+    def _first_then_null(value):
+        if sample_count <= 0:
+            return []
+        return [value] + [None] * (sample_count - 1)
+
+    data = {
+        "Unix Time": _first_then_null(str(unix_time)),
+        "Sample Index": np.arange(sample_count, dtype=int),
+        "Speed": _first_then_null(motor_cond_out_list[0]),
+        "Torque": _first_then_null(motor_cond_out_list[1]),
+        "Power": _first_then_null(motor_cond_out_list[2]),
+        "Efficiency": _first_then_null(motor_cond_out_list[3]),
+        "Voltage alpha": _pad(v_alpha),
+        "Voltage beta": _pad(v_beta),
+        "Current alpha": _pad(i_alpha),
+        "Current beta": _pad(i_beta),
+        "Error flags": _pad(err),
+    }
+    return pd.DataFrame(data)
+
+
+def _build_motor_cond_out_list(motor_cond, ipc_info=None):
+    """Build [speed, torque, power, efficiency, alarm] with IPC priority."""
+    if isinstance(ipc_info, dict):
+        speed = float(ipc_info.get('speed_rpm', 0.0))
+        torque = float(ipc_info.get('torque_nm', 0.0))
+        power = float(ipc_info.get('power_kw(E)', 0.0))
+        efficiency = float(ipc_info.get('efficiency_pct', 0.0))
+        return [speed, torque, power, efficiency, int(efficiency < 90.0)]
+    return get_motor_cond_list(motor_cond)
+
+# save the RUL data into parquet/csv file with pandas dataframe
+def data_update_RUL_parquet(ser, device_num, motor_cond, filename, unpack_rul_data, retries=5, delay=1,
+                            dataformat="parquet", ipc_info=None):
     # rul data save status
     rul_data_is_save = 0
     # for motor online check
@@ -34,11 +84,12 @@ def data_update_RUL_parquet(ser, device_num, motor_cond, filename, unpack_rul_da
         rul_out_data = np.vstack((voltage_alpha_out, voltage_beta_out, current_alpha_out, current_beta_out,
                                   np.array(unpack_rul_data['error_record'])))
 
-        motor_cond_out_list = get_motor_cond_list(motor_cond)
+        motor_cond_out_list = _build_motor_cond_out_list(motor_cond, ipc_info)
         # conditions: 'Speed(Rpm)', 'Torque(N)', 'Power(KW)', 'Efficiency(%)', 'Efficiency_alarm'
         # print(f'torque={motor_cond_out_list[1]:.3f} Nm, power={motor_cond_out_list[2]:.3f}/{motor_cond_out_list[2]:.3f} KW (E/M), speed={motor_cond_out_list[0]:.3f} RPM')
+        unix_time = int(time.time())
         data = {
-            "Unix Time": [str(int(time.time()))],       # Unix 時間
+            "Unix Time": [str(unix_time)],       # Unix 時間
             "Speed": [motor_cond_out_list[0]],          # 力矩 (Nm)
             "Torque": [motor_cond_out_list[1]],         # 效率 (%)
             "Power": [motor_cond_out_list[2]],          # 轉速 (RPM)
@@ -55,9 +106,28 @@ def data_update_RUL_parquet(ser, device_num, motor_cond, filename, unpack_rul_da
         for try_times in range(retries):
             try:
                 base, ext = os.path.splitext(filename)  # 分離檔名與副檔名
-                if ext.lower() == ".csv":
-                     filename=base + ".parquet"
-                df_tosave.to_parquet(filename, engine="pyarrow")
+                dataformat_norm = str(dataformat).strip().lower()
+                if dataformat_norm == "csv":
+                    if ext.lower() != ".csv":
+                        filename = base + ".csv"
+                    df_csv = _build_rul_csv_column_df(
+                        unix_time,
+                        motor_cond_out_list,
+                        voltage_alpha_out,
+                        voltage_beta_out,
+                        current_alpha_out,
+                        current_beta_out,
+                        unpack_rul_data['error_record'],
+                    )
+                    df_csv.to_csv(filename, index=False, encoding="utf-8")
+                elif dataformat_norm == "parquet":
+                    if ext.lower() == ".csv":
+                        filename = base + ".parquet"
+                    elif ext.lower() != ".parquet":
+                        filename = base + ".parquet"
+                    df_tosave.to_parquet(filename, engine="pyarrow")
+                else:
+                    raise ValueError(f"unsupported dataformat: {dataformat}. use 'parquet' or 'csv'")
                 rul_data_is_save = 1  # rul data save success
                 break  # exit the loop if save is successful
             except Exception as e:
@@ -211,54 +281,19 @@ def get_fundamental_freq(signal_real, signal_imag, sampling_rate, ignore_dc=True
 
     return float(fund_freq)
 
-# save the RUL data into the csv file
-def data_update_RUL_csv (ser, device_num, file_path, unpack_rul_data, retries=5,delay=1):
-    #rul data save status
-    rul_data_is_save =0
-    # for motor online check
-    current_raw_alpha=u16_to_true_data(np.array(unpack_rul_data['current_alpha']), 1)
-    current_raw_beta=u16_to_true_data(np.array(unpack_rul_data['current_beta']), 1)
-    current_raw_alpha_mean_rms = np.sqrt(np.mean((current_raw_alpha-np.mean(current_raw_alpha)) ** 2))
-    motor_onine_flag = True # for test only
-    # motor_onine_flag = True if current_raw_alpha_mean_rms > 0.05 else False
-
-    if motor_onine_flag: # if motor is online, save the rul data
-        voltage_alpha_out = u16_to_true_data(np.array(unpack_rul_data['voltage_alpha']), Motor_global_vars.Base_voltage)
-        voltage_beta_out  = u16_to_true_data(np.array(unpack_rul_data['voltage_beta']), Motor_global_vars.Base_voltage)
-        # current_alpha_out = np.array(unpack_rul_data['current_alpha'])
-        # current_beta_out  = np.array(unpack_rul_data['current_beta'])
-        current_alpha_out = u16_to_true_data(np.array(unpack_rul_data['current_alpha']), Motor_global_vars.Base_current)
-        current_beta_out  = u16_to_true_data(np.array(unpack_rul_data['current_beta']), Motor_global_vars.Base_current)
-        rul_out_data = np.vstack((voltage_alpha_out, voltage_beta_out, current_alpha_out, current_beta_out, np.array(unpack_rul_data['error_record'])))
-
-        for try_times in range(retries):
-            try:
-                # write to file
-                # Organize data
-                with open(file_path, mode='w', newline='', encoding='utf-8') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow(['Unix_time',str(int(time.time()))])
-                    writer.writerow(['V_alpha', 'V_beta', 'I_alpha', 'I_beta','error_flags'])
-                    # 強制數值單位至小數點第六位
-                    writer.writerows([[f"{x:.{6}f}" for x in row] for row in rul_out_data.T])
-                rul_data_is_save=1 # rul data save success
-            except Exception as e:
-                print(f'file saving error : {e}')
-                print(f'{file_path} open fail, try again {delay}s later ')
-                time.sleep(delay)  # sleep for 5 second
-    else:
-        voltage_raw_alpha = u16_to_true_data(np.array(unpack_rul_data['voltage_alpha']), 1)
-        voltage_raw_beta  = u16_to_true_data(np.array(unpack_rul_data['voltage_beta']), 1)
-        vac_alpha_offset = np.mean(voltage_raw_alpha)
-        vac_beta_offset = np.mean(voltage_raw_beta)
-        command_485.set_ct_offset(ser, device_num, delay=0.1, ct_offset_alpha=vac_alpha_offset,
-                                  ct_offset_beta=vac_beta_offset, sensor='VAC')
-        ct_alpha_offset = np.mean(current_raw_alpha)
-        ct_beta_offset = np.mean(current_raw_beta)
-        command_485.set_ct_offset(ser, device_num, delay=0.1, ct_offset_alpha=ct_alpha_offset,
-                                  ct_offset_beta=ct_beta_offset,sensor='CT')
-
-    return rul_data_is_save
+# save the RUL data into csv file with same schema as data_update_RUL_parquet
+def data_update_RUL_csv(ser, device_num, motor_cond, filename, unpack_rul_data, retries=5, delay=1, ipc_info=None):
+    return data_update_RUL_parquet(
+        ser,
+        device_num,
+        motor_cond,
+        filename,
+        unpack_rul_data,
+        retries=retries,
+        delay=delay,
+        dataformat="csv",
+        ipc_info=ipc_info,
+    )
 # save the FAST data into the csv file
 def data_update_FAST_csv (file_path, motor_cond, motor_cn_sts, unpack_fast_data,err_record, retries=5,delay=1,device_number=1):
     ccae_data=read_sample_ccae()
